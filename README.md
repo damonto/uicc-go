@@ -21,7 +21,7 @@ Implemented reader families:
 - MBIM direct and proxy transports with UICC low-level access
 - QMI direct and proxy transports
 - QRTR direct Linux socket transport
-- Qualcomm UIM primitives over QMI or QRTR
+- QCOM UIM primitives over QMI or QRTR
 
 The implementation is pure Go. It does not use cgo and does not link against `libqmi`, `libmbim`, or `libqrtr-glib`.
 
@@ -46,11 +46,11 @@ at                           AT +CSIM APDU reader
 ccid                         PC/SC CCID APDU reader
 cdcwdm                       Linux cdc-wdm connection primitive
 mbim                         MBIM protocol, proxy/direct dialers, UICC access
-qualcomm                     Shared Qualcomm QMI/QMUX constants and transport contracts
-qualcomm/qmi                 QMI/QMUX transport, proxy/direct dialers
-qualcomm/qrtr                QRTR transport for QMI services
-qualcomm/tlv                 Qualcomm QMI TLV types, codecs, constructors, and lookup helpers
-qualcomm/uim                 QMI UIM primitives
+qcom                     Shared QCOM QMI/QMUX constants and transport contracts
+qcom/qmi                 QMI/QMUX transport, proxy/direct dialers
+qcom/qrtr                QRTR transport for QMI services
+qcom/tlv                 QCOM QMI TLV types, codecs, constructors, and lookup helpers
+qcom/uim                 QMI UIM primitives
 usim                         USIM/ISIM card loading and high-level operations
 usim/card                    Card-facing interfaces consumed by usim
 usim/command                 APDU command helpers used by usim
@@ -159,7 +159,7 @@ func main() {
 }
 ```
 
-## Qualcomm UIM over QMI
+## QCOM UIM over QMI
 
 Use `qmi.Open` to create a QMI transport, then `uim.New` to allocate a UIM client and expose QMI UIM primitives.
 
@@ -170,8 +170,8 @@ import (
 	"context"
 	"log"
 
-	"github.com/damonto/uicc-go/qualcomm/qmi"
-	"github.com/damonto/uicc-go/qualcomm/uim"
+	"github.com/damonto/uicc-go/qcom/qmi"
+	"github.com/damonto/uicc-go/qcom/uim"
 )
 
 func main() {
@@ -202,9 +202,9 @@ Direct mode:
 transport, err := qmi.Open(ctx, qmi.WithDirect("/dev/cdc-wdm0"))
 ```
 
-## Qualcomm UIM over QRTR
+## QCOM UIM over QRTR
 
-QRTR uses the top-level `qualcomm/qrtr` package and is not nested under `qmi`.
+QRTR uses the top-level `qcom/qrtr` package and is not nested under `qmi`.
 
 ```go
 package main
@@ -213,8 +213,8 @@ import (
 	"context"
 	"log"
 
-	"github.com/damonto/uicc-go/qualcomm/qrtr"
-	"github.com/damonto/uicc-go/qualcomm/uim"
+	"github.com/damonto/uicc-go/qcom/qrtr"
+	"github.com/damonto/uicc-go/qcom/uim"
 )
 
 func main() {
@@ -325,7 +325,7 @@ Pass a logger when the caller owns logging:
 card, err := usim.New(ctx, reader, logger)
 ```
 
-QMI UIM can be adapted with `usim.NewQualcomm`:
+QMI UIM can be adapted with `usim.NewQCOM`:
 
 ```go
 transport, err := qmi.Open(ctx, qmi.WithProxy("/dev/cdc-wdm0"))
@@ -336,7 +336,7 @@ uimReader, err := uim.New(ctx, transport, uim.WithSlot(1))
 if err != nil {
 	return err
 }
-reader, err := usim.NewQualcomm(uimReader)
+reader, err := usim.NewQCOM(uimReader)
 ```
 
 MBIM can be adapted with `usim.NewMBIM`:
@@ -367,7 +367,7 @@ GOCACHE=/tmp/uicc-go-build go test ./...
 Race-test the protocol packages:
 
 ```sh
-GOCACHE=/tmp/uicc-go-build go test -race ./at ./mbim ./qualcomm ./qualcomm/qmi ./qualcomm/qrtr ./qualcomm/uim
+GOCACHE=/tmp/uicc-go-build go test -race ./at ./mbim ./qcom ./qcom/qmi ./qcom/qrtr ./qcom/uim
 ```
 
 Cross-compile the AT package:
@@ -388,7 +388,7 @@ GOCACHE=/tmp/uicc-go-build go mod tidy -diff
 - Protocol readers expose transport and protocol primitives. They should not depend on `usim`.
 - `usim` provides card-level adaptation and business behavior on top of readers.
 - QMI and MBIM require explicit proxy or direct mode selection.
-- QRTR is a top-level Qualcomm transport package.
+- QRTR is a top-level QCOM transport package.
 - Types implement Go standard interfaces such as `encoding.BinaryMarshaler`, `encoding.BinaryUnmarshaler`, `io.ReaderFrom`, and `io.WriterTo` where those interfaces naturally fit the wire format.
 
 ## License
