@@ -14,8 +14,7 @@ import (
 )
 
 const (
-	defaultReadTimeout            = 5 * time.Second
-	defaultReadTimeoutDeciseconds = 50
+	defaultWriteTimeout = 5 * time.Second
 )
 
 type serialPort struct {
@@ -66,8 +65,8 @@ func setTermios(fd int, baudRate int) (*unix.Termios, error) {
 	termios.Cflag |= unix.CS8 | unix.CLOCAL | unix.CREAD | baud
 	termios.Ispeed = baud
 	termios.Ospeed = baud
-	termios.Cc[unix.VMIN] = 0
-	termios.Cc[unix.VTIME] = defaultReadTimeoutDeciseconds
+	termios.Cc[unix.VMIN] = 1
+	termios.Cc[unix.VTIME] = 0
 	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &termios); err != nil {
 		return nil, fmt.Errorf("writing termios: %w", err)
 	}
@@ -83,7 +82,7 @@ func (p *serialPort) Read(buf []byte) (int, error) {
 		return 0, nil
 	}
 	for {
-		deadline := p.effectiveReadDeadline()
+		deadline := p.currentReadDeadline()
 		if err := waitReady(int(p.file.Fd()), unix.POLLIN, deadline); err != nil {
 			return 0, err
 		}
@@ -151,15 +150,10 @@ func (p *serialPort) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
-func (p *serialPort) effectiveReadDeadline() time.Time {
+func (p *serialPort) currentReadDeadline() time.Time {
 	p.mu.Lock()
 	deadline := p.readDeadline
 	p.mu.Unlock()
-
-	defaultDeadline := time.Now().Add(defaultReadTimeout)
-	if deadline.IsZero() || defaultDeadline.Before(deadline) {
-		return defaultDeadline
-	}
 	return deadline
 }
 
@@ -169,19 +163,23 @@ func (p *serialPort) effectiveWriteDeadline() time.Time {
 	p.mu.Unlock()
 
 	if deadline.IsZero() {
-		return time.Now().Add(defaultReadTimeout)
+		return time.Now().Add(defaultWriteTimeout)
 	}
 	return deadline
 }
 
 func waitReady(fd int, events int16, deadline time.Time) error {
 	for {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return errIOTimedOut
+		timeout := -1
+		if !deadline.IsZero() {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return errIOTimedOut
+			}
+			timeout = durationMillis(remaining)
 		}
 		pollFDs := []unix.PollFd{{Fd: int32(fd), Events: events}}
-		n, err := unix.Poll(pollFDs, durationMillis(remaining))
+		n, err := unix.Poll(pollFDs, timeout)
 		if errors.Is(err, unix.EINTR) {
 			continue
 		}
