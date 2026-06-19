@@ -7,12 +7,27 @@ import (
 	"github.com/damonto/uicc-go/usim/tlv"
 )
 
-func DecodeText(data []byte) (string, error) {
+type Text string
+
+func (text Text) String() string {
+	return string(text)
+}
+
+func (text Text) MarshalText() ([]byte, error) {
+	return []byte(string(text)), nil
+}
+
+func (text *Text) UnmarshalText(data []byte) error {
+	*text = Text(string(data))
+	return nil
+}
+
+func (text *Text) UnmarshalBinary(data []byte) error {
 	for len(data) > 0 && (data[len(data)-1] == 0xFF || data[len(data)-1] == 0x00) {
 		data = data[:len(data)-1]
 	}
 	if len(data) == 0 {
-		return "", errors.New("parsing TLV string: empty payload")
+		return errors.New("parsing TLV string: empty payload")
 	}
 
 	var items tlv.Items
@@ -22,17 +37,19 @@ func DecodeText(data []byte) (string, error) {
 			if len(item.Value) == 0 {
 				continue
 			}
-			return string(item.Value), nil
+			*text = Text(string(item.Value))
+			return nil
 		}
-		return "", errors.New("parsing TLV string: missing value")
+		return errors.New("parsing TLV string: missing value")
 	}
 
 	for _, b := range data {
 		if b < 0x20 || b > 0x7E {
-			return "", malformedTLV(err)
+			return malformedTLV(err)
 		}
 	}
-	return string(data), nil
+	*text = Text(string(data))
+	return nil
 }
 
 func malformedTLV(err error) error {

@@ -18,6 +18,23 @@ type EFDirRecord struct {
 	Label string
 }
 
+func (rec EFDirRecord) MarshalBinary() ([]byte, error) {
+	if len(rec.AID) == 0 {
+		return nil, errors.New("marshaling EF_DIR record: AID is empty")
+	}
+
+	inner := tlv.Items{{Tag: tagRecordAID, Value: append([]byte(nil), rec.AID...)}}
+	if rec.Label != "" {
+		inner = append(inner, tlv.Item{Tag: tagRecordLabel, Value: []byte(rec.Label)})
+	}
+	value, err := inner.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+
+	return tlv.Items{{Tag: tagRecord, Value: value}}.MarshalBinary()
+}
+
 func (rec *EFDirRecord) UnmarshalBinary(data []byte) error {
 	data = trimEFDirPadding(data)
 	if len(data) == 0 {

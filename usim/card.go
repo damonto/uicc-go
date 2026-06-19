@@ -10,6 +10,7 @@ import (
 
 	usimcard "github.com/damonto/uicc-go/usim/card"
 	"github.com/damonto/uicc-go/usim/command"
+	"github.com/damonto/uicc-go/usim/simfile"
 )
 
 var (
@@ -131,8 +132,8 @@ func (u *Card) authenticate3G(ctx context.Context, aid, rand, autn []byte, eapAK
 	if err != nil {
 		return AKAResult{}, fmt.Errorf("authenticating USIM: %w", err)
 	}
-	result, err := command.Authenticate3G{}.Decode(payload)
-	if err != nil {
+	var result command.Authenticate3GResult
+	if err := result.UnmarshalBinary(payload); err != nil {
 		return AKAResult{}, fmt.Errorf("authenticating USIM: %w", err)
 	}
 	return AKAResult{
@@ -165,41 +166,55 @@ func (u *Card) load(ctx context.Context) error {
 	rootApp := command.App{Reader: u.tx}
 	usimApp := command.App{Reader: u.tx, AID: u.aid}
 
-	iccid, err := rootApp.ReadICCID(ctx, fileEFICCID)
+	iccidData, err := rootApp.Transparent(ctx, fileEFICCID, "reading EF_ICCID")
 	if err != nil {
 		return fmt.Errorf("loading ICCID: %w", err)
 	}
-	u.iccid = iccid
+	var iccid simfile.ICCID
+	if err := iccid.UnmarshalBinary(iccidData); err != nil {
+		return fmt.Errorf("loading ICCID: %w", err)
+	}
+	u.iccid = iccid.String()
 
-	imsi, err := usimApp.ReadIMSI(ctx, fileEFIMSI)
+	imsiData, err := usimApp.Transparent(ctx, fileEFIMSI, "reading EF_IMSI")
 	if err != nil {
 		return fmt.Errorf("loading IMSI: %w", err)
 	}
-	mncLength, err := usimApp.ReadMNCLength(ctx, fileEFAD)
+	var imsi simfile.IMSI
+	if err := imsi.UnmarshalBinary(imsiData); err != nil {
+		return fmt.Errorf("loading IMSI: %w", err)
+	}
+	adData, err := usimApp.Transparent(ctx, fileEFAD, "reading EF_AD")
 	if err != nil {
 		return fmt.Errorf("loading EF_AD: %w", err)
 	}
-	mnc, err := formatMNC(imsi.Digits, mncLength)
+	var ad simfile.AdministrativeData
+	if err := ad.UnmarshalBinary(adData); err != nil {
+		return fmt.Errorf("loading EF_AD: %w", err)
+	}
+	mnc, err := formatMNC(imsi.Digits, ad.MNCLength)
 	if err != nil {
 		return fmt.Errorf("loading IMSI: %w", err)
 	}
 	u.imsi = imsi.Digits
 	u.mcc = imsi.MCC
 	u.mnc = mnc
-	u.mncLength = mncLength
+	u.mncLength = ad.MNCLength
 
-	if gid1, err := usimApp.ReadTransparentHex(ctx, fileEFGID1, "reading EF_GID1"); err == nil {
-		u.gid1 = gid1
+	if gid1, err := usimApp.Transparent(ctx, fileEFGID1, "reading EF_GID1"); err == nil {
+		u.gid1 = strings.ToUpper(hex.EncodeToString(gid1))
 	} else {
 		u.logger.Debug("reading EF_GID1 from USIM failed", "err", err)
 	}
 
-	smsc, err := usimApp.ReadSMSC(ctx, fileEFSMSP)
+	records, err := usimApp.LinearFixed(ctx, fileEFSMSP, "reading EF_SMSP")
 	if err == nil {
-		u.serviceCenter.Address = smsc
+		if smsc, err := firstSMSC(records); err == nil {
+			u.serviceCenter.Address = smsc.String()
+		}
 	}
-	if psi, err := usimApp.ReadLinearFixedTextPathFirst(ctx, pathEFPSISMSC, "reading EFPSISMSC"); err == nil {
-		u.serviceCenter.PSI = psi
+	if psi, err := usimApp.FirstText(ctx, pathEFPSISMSC, "reading EFPSISMSC"); err == nil {
+		u.serviceCenter.PSI = psi.String()
 	} else {
 		u.logger.Debug("reading EFPSISMSC from USIM failed", "err", err)
 	}
@@ -236,25 +251,25 @@ func (u *Card) loadISIM(ctx context.Context) error {
 
 	u.logger.Debug("found ISIM AID", "aid", fmt.Sprintf("%X", aid))
 	u.isimAID = aid
-	impi, err := isimApp.ReadTransparentText(ctx, fileEFIMPI, "reading EF_IMPI")
+	impi, err := isimApp.Text(ctx, fileEFIMPI, "reading EF_IMPI")
 	if err != nil {
 		return fmt.Errorf("reading EF_IMPI: %w", err)
 	}
-	privateIdentity := impi
+	privateIdentity := impi.String()
 	var homeDomain string
-	if domain, err := isimApp.ReadTransparentText(ctx, fileEFDomain, "reading EF_DOMAIN"); err == nil {
-		homeDomain = domain
+	if domain, err := isimApp.Text(ctx, fileEFDomain, "reading EF_DOMAIN"); err == nil {
+		homeDomain = domain.String()
 	} else {
 		u.logger.Debug("reading EF_DOMAIN failed", "err", err)
 	}
-	impu, err := isimApp.ReadLinearFixedTextFirst(ctx, fileEFIMPU, "reading EF_IMPU")
+	impu, err := isimApp.FirstText(ctx, fileEFIMPU, "reading EF_IMPU")
 	if err != nil {
 		return fmt.Errorf("reading EF_IMPU: %w", err)
 	}
-	publicIdentity := impu
+	publicIdentity := impu.String()
 	serviceCenter := u.serviceCenter
-	if psi, err := isimApp.ReadLinearFixedTextPathFirst(ctx, pathEFPSISMSC, "reading EFPSISMSC"); err == nil {
-		serviceCenter.PSI = psi
+	if psi, err := isimApp.FirstText(ctx, pathEFPSISMSC, "reading EFPSISMSC"); err == nil {
+		serviceCenter.PSI = psi.String()
 	} else {
 		u.logger.Debug("reading EFPSISMSC from ISIM failed", "err", err)
 	}
@@ -276,6 +291,19 @@ func mustHex(s string) []byte {
 		panic(err)
 	}
 	return b
+}
+
+func firstSMSC(records [][]byte) (simfile.SMSC, error) {
+	for _, record := range records {
+		var smsc simfile.SMSC
+		if err := smsc.UnmarshalBinary(record); err != nil {
+			return "", err
+		}
+		if smsc != "" {
+			return smsc, nil
+		}
+	}
+	return "", errors.New("reading EF_SMSP: SMSC not found")
 }
 
 func formatMNC(imsi string, mncLength int) (string, error) {

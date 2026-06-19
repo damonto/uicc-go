@@ -2,7 +2,7 @@ package simfile
 
 import "testing"
 
-func TestDecodeMNCLength(t *testing.T) {
+func TestAdministrativeDataUnmarshalBinary(t *testing.T) {
 	tests := []struct {
 		name    string
 		data    []byte
@@ -38,18 +38,19 @@ func TestDecodeMNCLength(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := DecodeMNCLength(tt.data)
+			var got AdministrativeData
+			err := got.UnmarshalBinary(tt.data)
 			if tt.wantErr != "" {
 				if err == nil || err.Error() != tt.wantErr {
-					t.Fatalf("DecodeMNCLength() error = %v, want %q", err, tt.wantErr)
+					t.Fatalf("UnmarshalBinary() error = %v, want %q", err, tt.wantErr)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("DecodeMNCLength() error = %v", err)
+				t.Fatalf("UnmarshalBinary() error = %v", err)
 			}
-			if got != tt.want {
-				t.Fatalf("DecodeMNCLength() = %d, want %d", got, tt.want)
+			if got.MNCLength != tt.want {
+				t.Fatalf("UnmarshalBinary().MNCLength = %d, want %d", got.MNCLength, tt.want)
 			}
 		})
 	}

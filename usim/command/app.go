@@ -3,7 +3,6 @@ package command
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -44,62 +43,11 @@ func (c FindAID) Run(ctx context.Context, r usimcard.Reader) ([]byte, error) {
 	return nil, errors.New("application not found")
 }
 
-func (a App) ReadICCID(ctx context.Context, path []byte) (string, error) {
+func (a App) Transparent(ctx context.Context, path []byte, action string) ([]byte, error) {
 	file := a.file(path)
-	attrs, err := a.fileStructure(ctx, file, "reading EF_ICCID", simfile.StructureTransparent)
-	if err != nil {
-		return "", err
-	}
-
-	data, err := a.Reader.ReadTransparent(ctx, usimcard.TransparentRead{
-		File:   file,
-		Length: attrs.FileSize,
-	})
-	if err != nil {
-		return "", err
-	}
-	return ReadICCID{}.Decode(data)
-}
-
-func (a App) ReadIMSI(ctx context.Context, id []byte) (IMSI, error) {
-	file := a.file(id)
-	attrs, err := a.fileStructure(ctx, file, "reading EF_IMSI", simfile.StructureTransparent)
-	if err != nil {
-		return IMSI{}, err
-	}
-
-	data, err := a.Reader.ReadTransparent(ctx, usimcard.TransparentRead{
-		File:   file,
-		Length: attrs.FileSize,
-	})
-	if err != nil {
-		return IMSI{}, err
-	}
-	return ReadIMSI{}.Decode(data)
-}
-
-func (a App) ReadMNCLength(ctx context.Context, id []byte) (int, error) {
-	file := a.file(id)
-	attrs, err := a.fileStructure(ctx, file, "reading EF_AD", simfile.StructureTransparent)
-	if err != nil {
-		return 0, err
-	}
-
-	data, err := a.Reader.ReadTransparent(ctx, usimcard.TransparentRead{
-		File:   file,
-		Length: attrs.FileSize,
-	})
-	if err != nil {
-		return 0, err
-	}
-	return simfile.DecodeMNCLength(data)
-}
-
-func (a App) ReadTransparentHex(ctx context.Context, id []byte, action string) (string, error) {
-	file := a.file(id)
 	attrs, err := a.fileStructure(ctx, file, action, simfile.StructureTransparent)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	data, err := a.Reader.ReadTransparent(ctx, usimcard.TransparentRead{
@@ -107,49 +55,59 @@ func (a App) ReadTransparentHex(ctx context.Context, id []byte, action string) (
 		Length: attrs.FileSize,
 	})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return strings.ToUpper(hex.EncodeToString(data)), nil
+	return slices.Clone(data), nil
 }
 
-func (a App) ReadTransparentText(ctx context.Context, id []byte, action string) (string, error) {
-	file := a.file(id)
-	attrs, err := a.fileStructure(ctx, file, action, simfile.StructureTransparent)
+func (a App) Text(ctx context.Context, path []byte, action string) (simfile.Text, error) {
+	data, err := a.Transparent(ctx, path, action)
 	if err != nil {
 		return "", err
 	}
 
-	data, err := a.Reader.ReadTransparent(ctx, usimcard.TransparentRead{
-		File:   file,
-		Length: attrs.FileSize,
-	})
-	if err != nil {
+	var text simfile.Text
+	if err := text.UnmarshalBinary(data); err != nil {
 		return "", err
 	}
-	return ReadTextBinary{}.Decode(data)
+	return text, nil
 }
 
-func (a App) ReadLinearFixedTextFirst(ctx context.Context, id []byte, action string) (string, error) {
-	attrs, err := a.fileStructure(ctx, a.file(id), action, simfile.StructureLinearFixed)
+func (a App) LinearFixed(ctx context.Context, path []byte, action string) ([][]byte, error) {
+	file := a.file(path)
+	attrs, err := a.fileStructure(ctx, file, action, simfile.StructureLinearFixed)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return a.readLinearFixedTextFirst(ctx, a.file(id), attrs, action)
+	if attrs.RecordCount == 0 {
+		return nil, fmt.Errorf("%s: file has no records", action)
+	}
+
+	records := make([][]byte, 0, attrs.RecordCount)
+	for recordID := uint16(1); recordID <= attrs.RecordCount; recordID++ {
+		record, err := a.Reader.ReadRecord(ctx, usimcard.RecordRead{
+			File:   file,
+			Record: recordID,
+			Length: attrs.RecordSize,
+		})
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, slices.Clone(record))
+	}
+	return records, nil
 }
 
-func (a App) ReadLinearFixedTextPathFirst(ctx context.Context, path []byte, action string) (string, error) {
+func (a App) FirstText(ctx context.Context, path []byte, action string) (simfile.Text, error) {
 	file := a.file(path)
 	attrs, err := a.fileStructure(ctx, file, action, simfile.StructureLinearFixed)
 	if err != nil {
 		return "", err
 	}
-	return a.readLinearFixedTextFirst(ctx, file, attrs, action)
-}
-
-func (a App) readLinearFixedTextFirst(ctx context.Context, file usimcard.FileRef, attrs usimcard.FileAttributes, action string) (string, error) {
 	if attrs.RecordCount == 0 {
 		return "", fmt.Errorf("%s: file has no records", action)
 	}
+
 	for recordID := uint16(1); recordID <= attrs.RecordCount; recordID++ {
 		record, err := a.Reader.ReadRecord(ctx, usimcard.RecordRead{
 			File:   file,
@@ -159,8 +117,9 @@ func (a App) readLinearFixedTextFirst(ctx context.Context, file usimcard.FileRef
 		if err != nil {
 			return "", err
 		}
-		value, err := simfile.DecodeText(record)
-		if err != nil {
+
+		var value simfile.Text
+		if err := value.UnmarshalBinary(record); err != nil {
 			continue
 		}
 		if value != "" {
@@ -168,34 +127,6 @@ func (a App) readLinearFixedTextFirst(ctx context.Context, file usimcard.FileRef
 		}
 	}
 	return "", fmt.Errorf("%s: no populated record", action)
-}
-
-func (a App) ReadSMSC(ctx context.Context, id []byte) (string, error) {
-	file := a.file(id)
-	attrs, err := a.fileStructure(ctx, file, "reading EF_SMSP", simfile.StructureLinearFixed)
-	if err != nil {
-		return "", err
-	}
-
-	for recordID := uint16(1); recordID <= attrs.RecordCount; recordID++ {
-		record, err := a.Reader.ReadRecord(ctx, usimcard.RecordRead{
-			File:   file,
-			Record: recordID,
-			Length: attrs.RecordSize,
-		})
-		if err != nil {
-			return "", err
-		}
-		number, err := ReadSMSCRecord{RecordSize: attrs.RecordSize}.Decode(record)
-		if err != nil {
-			return "", err
-		}
-		if number != "" {
-			return number, nil
-		}
-	}
-
-	return "", errors.New("reading EF_SMSP: SMSC not found")
 }
 
 func (a App) file(path []byte) usimcard.FileRef {

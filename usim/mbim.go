@@ -82,11 +82,18 @@ func (r *MBIM) Authenticate3G(ctx context.Context, req usimcard.AuthenticateRequ
 	if err != nil {
 		return nil, err
 	}
-	payload, err := (akaResponse{AuthAKAResponse: resp}).MarshalBinary()
-	if err != nil {
-		return nil, err
+
+	result := command.Authenticate3GResult{Reject: true}
+	if len(resp.RES) != 0 {
+		result = command.Authenticate3GResult{
+			RES: slices.Clone(resp.RES),
+			CK:  slices.Clone(resp.CK),
+			IK:  slices.Clone(resp.IK),
+		}
+	} else if slices.ContainsFunc(resp.AUTS, func(b byte) bool { return b != 0 }) {
+		result = command.Authenticate3GResult{AUTS: slices.Clone(resp.AUTS)}
 	}
-	return payload, nil
+	return result.MarshalBinary()
 }
 
 func (r *MBIM) SMSPPDownload(ctx context.Context, req usimcard.SMSPPDownloadRequest) (usimcard.SMSPPDownloadResponse, error) {
@@ -105,48 +112,4 @@ func (r *MBIM) SMSPPDownload(ctx context.Context, req usimcard.SMSPPDownloadRequ
 
 func (r *MBIM) Close() error {
 	return r.reader.Close()
-}
-
-type akaResponse struct {
-	*mbim.AuthAKAResponse
-}
-
-func (r akaResponse) MarshalBinary() ([]byte, error) {
-	if len(r.RES) != 0 {
-		if err := checkAKAField("RES", r.RES); err != nil {
-			return nil, err
-		}
-		if err := checkAKAField("CK", r.CK); err != nil {
-			return nil, err
-		}
-		if err := checkAKAField("IK", r.IK); err != nil {
-			return nil, err
-		}
-
-		out := make([]byte, 0, 3+len(r.RES)+len(r.CK)+len(r.IK))
-		out = append(out, 0xDB, byte(len(r.RES)))
-		out = append(out, r.RES...)
-		out = append(out, byte(len(r.CK)))
-		out = append(out, r.CK...)
-		out = append(out, byte(len(r.IK)))
-		out = append(out, r.IK...)
-		return out, nil
-	}
-	if slices.ContainsFunc(r.AUTS, func(b byte) bool { return b != 0 }) {
-		if err := checkAKAField("AUTS", r.AUTS); err != nil {
-			return nil, err
-		}
-		out := make([]byte, 0, 2+len(r.AUTS))
-		out = append(out, 0xDC, byte(len(r.AUTS)))
-		out = append(out, r.AUTS...)
-		return out, nil
-	}
-	return []byte{0xDC, 0x00}, nil
-}
-
-func checkAKAField(name string, value []byte) error {
-	if len(value) > 0xff {
-		return fmt.Errorf("marshaling AKA response: %s exceeds 255 bytes", name)
-	}
-	return nil
 }

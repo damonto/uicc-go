@@ -7,11 +7,11 @@ import (
 	"github.com/damonto/uicc-go/apdu"
 )
 
-func TestDecodeText(t *testing.T) {
+func TestTextUnmarshalBinary(t *testing.T) {
 	tests := []struct {
 		name    string
 		data    []byte
-		want    string
+		want    Text
 		wantErr error
 	}{
 		{
@@ -33,18 +33,42 @@ func TestDecodeText(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := DecodeText(tt.data)
+			var got Text
+			err := got.UnmarshalBinary(tt.data)
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
-					t.Fatalf("DecodeText() error = %v, want %v", err, tt.wantErr)
+					t.Fatalf("UnmarshalBinary() error = %v, want %v", err, tt.wantErr)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("DecodeText() error = %v", err)
+				t.Fatalf("UnmarshalBinary() error = %v", err)
 			}
 			if got != tt.want {
-				t.Fatalf("DecodeText() = %q, want %q", got, tt.want)
+				t.Fatalf("UnmarshalBinary() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTextMarshalText(t *testing.T) {
+	tests := []struct {
+		name string
+		text Text
+		want string
+	}{
+		{name: "plain text", text: "sip:test@example.com", want: "sip:test@example.com"},
+		{name: "empty text", text: "", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.text.MarshalText()
+			if err != nil {
+				t.Fatalf("MarshalText() error = %v", err)
+			}
+			if string(got) != tt.want {
+				t.Fatalf("MarshalText() = %q, want %q", got, tt.want)
 			}
 		})
 	}

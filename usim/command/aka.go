@@ -49,21 +49,39 @@ func (c Authenticate3G) MarshalBinary() ([]byte, error) {
 	}.MarshalBinary()
 }
 
-func (c Authenticate3G) Decode(data []byte) (Authenticate3GResult, error) {
-	var result Authenticate3GResult
-	if err := result.UnmarshalBinary(data); err != nil {
-		return Authenticate3GResult{}, err
+func (r Authenticate3GResult) MarshalBinary() ([]byte, error) {
+	switch {
+	case len(r.RES) != 0 || len(r.CK) != 0 || len(r.IK) != 0:
+		if !r.IsSuccess() {
+			return nil, errors.New("marshaling AKA response: incomplete success result")
+		}
+		out := []byte{0xDB}
+		var err error
+		out, err = appendAKAChunk(out, "RES", r.RES)
+		if err != nil {
+			return nil, err
+		}
+		out, err = appendAKAChunk(out, "CK", r.CK)
+		if err != nil {
+			return nil, err
+		}
+		return appendAKAChunk(out, "IK", r.IK)
+	case len(r.AUTS) != 0:
+		if len(r.AUTS) != 14 {
+			return nil, fmt.Errorf("marshaling AKA response: invalid AUTS length %d", len(r.AUTS))
+		}
+		out := []byte{0xDC}
+		return appendAKAChunk(out, "AUTS", r.AUTS)
+	case r.Reject:
+		return []byte{0xDC, 0x00}, nil
+	default:
+		return nil, errors.New("marshaling AKA response: empty result")
 	}
-	return result, nil
-}
-
-func (c Authenticate3G) DecodeResponse(resp apdu.Response) (Authenticate3GResult, error) {
-	return c.Decode(resp.Data())
 }
 
 func (r *Authenticate3GResult) UnmarshalBinary(data []byte) error {
 	if len(data) < 1 {
-		return errors.New("authenticating USIM: authenticate response is empty")
+		return errors.New("parsing AKA response: empty payload")
 	}
 
 	original := slices.Clone(data)
@@ -100,24 +118,33 @@ func (r *Authenticate3GResult) UnmarshalBinary(data []byte) error {
 			return nil
 		}
 		if len(auts) != 14 {
-			return fmt.Errorf("authenticating USIM: invalid AUTS length %d in %X", len(auts), original)
+			return fmt.Errorf("parsing AKA response: invalid AUTS length %d in %X", len(auts), original)
 		}
 		*r = Authenticate3GResult{AUTS: auts}
 		return nil
 	default:
-		return fmt.Errorf("authenticating USIM: unexpected authenticate response %X", original)
+		return fmt.Errorf("parsing AKA response: unexpected payload %X", original)
 	}
 }
 
 func readAKAChunk(data []byte, name string, original []byte) ([]byte, []byte, error) {
 	if len(data) == 0 {
-		return nil, nil, fmt.Errorf("authenticating USIM: missing %s length in %X", name, original)
+		return nil, nil, fmt.Errorf("parsing AKA response: missing %s length in %X", name, original)
 	}
 	length := int(data[0])
 	data = data[1:]
 	if len(data) < length {
-		return nil, nil, fmt.Errorf("authenticating USIM: truncated %s in %X", name, original)
+		return nil, nil, fmt.Errorf("parsing AKA response: truncated %s in %X", name, original)
 	}
 	chunk := slices.Clone(data[:length])
 	return chunk, data[length:], nil
+}
+
+func appendAKAChunk(out []byte, name string, value []byte) ([]byte, error) {
+	if len(value) > 0xFF {
+		return nil, fmt.Errorf("marshaling AKA response: %s exceeds 255 bytes", name)
+	}
+	out = append(out, byte(len(value)))
+	out = append(out, value...)
+	return out, nil
 }

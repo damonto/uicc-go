@@ -1,6 +1,9 @@
 package simfile
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
 
 func TestEFDirRecordUnmarshalBinary(t *testing.T) {
 	tests := []struct {
@@ -8,6 +11,7 @@ func TestEFDirRecordUnmarshalBinary(t *testing.T) {
 		data    []byte
 		wantAID []byte
 		wantLbl string
+		wantBin []byte
 		wantErr bool
 	}{
 		{
@@ -15,6 +19,7 @@ func TestEFDirRecordUnmarshalBinary(t *testing.T) {
 			data:    []byte{0x61, 0x0F, 0x4F, 0x07, 0xA0, 0x00, 0x00, 0x00, 0x87, 0x10, 0x02, 0x50, 0x04, 0x55, 0x53, 0x49, 0x4D, 0xFF, 0xFF, 0xFF},
 			wantAID: []byte{0xA0, 0x00, 0x00, 0x00, 0x87, 0x10, 0x02},
 			wantLbl: "USIM",
+			wantBin: []byte{0x61, 0x0F, 0x4F, 0x07, 0xA0, 0x00, 0x00, 0x00, 0x87, 0x10, 0x02, 0x50, 0x04, 0x55, 0x53, 0x49, 0x4D},
 		},
 		{
 			name: "all padding means empty record",
@@ -42,6 +47,16 @@ func TestEFDirRecordUnmarshalBinary(t *testing.T) {
 			}
 			if got.Label != tt.wantLbl {
 				t.Fatalf("UnmarshalBinary().Label = %q, want %q", got.Label, tt.wantLbl)
+			}
+			if tt.wantBin == nil {
+				return
+			}
+			encoded, err := got.MarshalBinary()
+			if err != nil {
+				t.Fatalf("MarshalBinary() error = %v", err)
+			}
+			if !bytes.Equal(encoded, tt.wantBin) {
+				t.Fatalf("MarshalBinary() = % X, want % X", encoded, tt.wantBin)
 			}
 		})
 	}

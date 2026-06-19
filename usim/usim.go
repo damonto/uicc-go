@@ -58,8 +58,8 @@ func (r *Reader) ListApplications(ctx context.Context) ([]usimcard.Application, 
 			return nil, fmt.Errorf("parsing EF_DIR record %d: %w", recordID, err)
 		}
 
-		parsed, err := command.ReadEFDirRecord{RecordSize: info.RecordSize}.Decode(record)
-		if err != nil {
+		var parsed simfile.EFDirRecord
+		if err := parsed.UnmarshalBinary(record); err != nil {
 			return nil, fmt.Errorf("parsing EF_DIR record %d: %w", recordID, err)
 		}
 		if len(parsed.AID) == 0 {
@@ -233,7 +233,7 @@ func (r *Reader) readBinaryRaw(ctx context.Context, offset, length uint16) ([]by
 	data := make([]byte, 0, length)
 	for length > 0 {
 		chunk := min(length, uint16(0xFF))
-		raw, err := r.transmitCommand(ctx, command.ReadBinary{
+		raw, err := r.transmitCommand(ctx, command.BinaryRead{
 			Offset: offset,
 			Length: byte(chunk),
 		})
@@ -255,7 +255,7 @@ func (r *Reader) readRecordRaw(ctx context.Context, record, length uint16) ([]by
 		return nil, fmt.Errorf("reading record file: record length %d exceeds APDU limit", length)
 	}
 
-	raw, err := r.transmitCommand(ctx, command.ReadRecord{
+	raw, err := r.transmitCommand(ctx, command.RecordRead{
 		Record: byte(record),
 		Length: byte(length),
 	})

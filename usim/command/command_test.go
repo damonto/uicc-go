@@ -3,11 +3,11 @@ package command
 import (
 	"bytes"
 	"context"
+	"encoding"
 	"errors"
 	"strings"
 	"testing"
 
-	"github.com/damonto/uicc-go/apdu"
 	usimcard "github.com/damonto/uicc-go/usim/card"
 	"github.com/damonto/uicc-go/usim/simfile"
 )
@@ -65,7 +65,38 @@ func (r *fakeReader) SMSPPDownload(ctx context.Context, req usimcard.SMSPPDownlo
 
 func (r *fakeReader) Close() error { return nil }
 
-func TestTypedCommands(t *testing.T) {
+func TestReadCommandsMarshalBinary(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  encoding.BinaryMarshaler
+		want []byte
+	}{
+		{
+			name: "binary read",
+			cmd:  BinaryRead{Offset: 0x1234, Length: 0x10},
+			want: []byte{0x00, 0xB0, 0x12, 0x34, 0x10},
+		},
+		{
+			name: "record read",
+			cmd:  RecordRead{Record: 0x03, Length: 0x20},
+			want: []byte{0x00, 0xB2, 0x03, 0x04, 0x20},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.cmd.MarshalBinary()
+			if err != nil {
+				t.Fatalf("MarshalBinary() error = %v", err)
+			}
+			if !bytes.Equal(got, tt.want) {
+				t.Fatalf("MarshalBinary() = % X, want % X", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAuthenticate3GResultBinary(t *testing.T) {
 	res := []byte{0x11, 0x22, 0x33, 0x44}
 	ck := bytes.Repeat([]byte{0xAA}, 16)
 	ik := bytes.Repeat([]byte{0xBB}, 16)
@@ -80,118 +111,66 @@ func TestTypedCommands(t *testing.T) {
 		),
 		append([]byte{byte(len(ik))}, ik...)...,
 	)
-	akaSuccess = append(akaSuccess, 0x90, 0x00)
-	akaSyncFailure := append(append([]byte{0xDC, byte(len(auts))}, auts...), 0x90, 0x00)
+	akaSyncFailure := append([]byte{0xDC, byte(len(auts))}, auts...)
 
 	tests := []struct {
 		name  string
 		check func(t *testing.T)
 	}{
 		{
-			name: "read imsi",
+			name: "success",
 			check: func(t *testing.T) {
-				got, err := ReadIMSI{}.DecodeResponse(apdu.Response{0x08, 0x09, 0x10, 0x10, 0x10, 0x32, 0x54, 0x76, 0x98, 0x90, 0x00})
-				if err != nil {
-					t.Fatalf("DecodeResponse() error = %v", err)
-				}
-				if got.Digits != "001010123456789" || got.MCC != "001" || got.MNC != "010" {
-					t.Fatalf("DecodeResponse() = %+v, want digits=001010123456789 mcc=001 mnc=010", got)
-				}
-			},
-		},
-		{
-			name: "read imsi keeps real leading nine",
-			check: func(t *testing.T) {
-				got, err := ReadIMSI{}.DecodeResponse(apdu.Response{0x08, 0x99, 0x10, 0x07, 0x10, 0x32, 0x54, 0x76, 0x98, 0x90, 0x00})
-				if err != nil {
-					t.Fatalf("DecodeResponse() error = %v", err)
-				}
-				if got.Digits != "901700123456789" || got.MCC != "901" || got.MNC != "700" {
-					t.Fatalf("DecodeResponse() = %+v, want digits=901700123456789 mcc=901 mnc=700", got)
-				}
-			},
-		},
-		{
-			name: "read iccid",
-			check: func(t *testing.T) {
-				got, err := ReadICCID{}.DecodeResponse(apdu.Response{0x98, 0x68, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x90, 0x00})
-				if err != nil {
-					t.Fatalf("DecodeResponse() error = %v", err)
-				}
-				if got != "8986000000000000000" {
-					t.Fatalf("DecodeResponse() = %q, want %q", got, "8986000000000000000")
-				}
-			},
-		},
-		{
-			name: "read smsc malformed short record",
-			check: func(t *testing.T) {
-				_, err := ReadSMSCRecord{RecordSize: 10}.DecodeResponse(apdu.Response{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x90, 0x00})
-				if err == nil || err.Error() != "reading EF_SMSP: malformed record" {
-					t.Fatalf("DecodeResponse() error = %v, want %q", err, "reading EF_SMSP: malformed record")
-				}
-			},
-		},
-		{
-			name: "read smsc ignores impossible address length",
-			check: func(t *testing.T) {
-				record := make([]byte, 28)
-				copy(record[13:25], []byte{0x0C, 0x91, 0x21, 0x43, 0x65, 0x87, 0x09, 0x21, 0x43, 0x65, 0x87, 0x09})
-
-				got, err := ReadSMSCRecord{RecordSize: 28}.DecodeResponse(apdu.Response(append(record, 0x90, 0x00)))
-				if err != nil {
-					t.Fatalf("DecodeResponse() error = %v", err)
-				}
-				if got != "" {
-					t.Fatalf("DecodeResponse() = %q, want empty string", got)
-				}
-			},
-		},
-		{
-			name: "read ef dir record",
-			check: func(t *testing.T) {
-				got, err := ReadEFDirRecord{}.DecodeResponse(apdu.Response{0x61, 0x0F, 0x4F, 0x07, 0xA0, 0x00, 0x00, 0x00, 0x87, 0x10, 0x02, 0x50, 0x04, 0x55, 0x53, 0x49, 0x4D, 0x90, 0x00})
-				if err != nil {
-					t.Fatalf("DecodeResponse() error = %v", err)
-				}
-				if got.Label != "USIM" || !bytes.Equal(got.AID, []byte{0xA0, 0x00, 0x00, 0x00, 0x87, 0x10, 0x02}) {
-					t.Fatalf("DecodeResponse() = %+v", got)
-				}
-			},
-		},
-		{
-			name: "aka success",
-			check: func(t *testing.T) {
-				got, err := Authenticate3G{}.DecodeResponse(apdu.Response(akaSuccess))
-				if err != nil {
-					t.Fatalf("DecodeResponse() error = %v", err)
+				var got Authenticate3GResult
+				if err := got.UnmarshalBinary(akaSuccess); err != nil {
+					t.Fatalf("UnmarshalBinary() error = %v", err)
 				}
 				if !bytes.Equal(got.RES, res) || !bytes.Equal(got.CK, ck) || !bytes.Equal(got.IK, ik) {
-					t.Fatalf("DecodeResponse() = %+v", got)
+					t.Fatalf("UnmarshalBinary() = %+v", got)
+				}
+				encoded, err := got.MarshalBinary()
+				if err != nil {
+					t.Fatalf("MarshalBinary() error = %v", err)
+				}
+				if !bytes.Equal(encoded, akaSuccess) {
+					t.Fatalf("MarshalBinary() = % X, want % X", encoded, akaSuccess)
 				}
 			},
 		},
 		{
-			name: "aka sync failure",
+			name: "sync failure",
 			check: func(t *testing.T) {
-				got, err := Authenticate3G{}.DecodeResponse(apdu.Response(akaSyncFailure))
-				if err != nil {
-					t.Fatalf("DecodeResponse() error = %v", err)
+				var got Authenticate3GResult
+				if err := got.UnmarshalBinary(akaSyncFailure); err != nil {
+					t.Fatalf("UnmarshalBinary() error = %v", err)
 				}
 				if !got.IsSynchronizationFailure() || !bytes.Equal(got.AUTS, auts) {
-					t.Fatalf("DecodeResponse() = %+v", got)
+					t.Fatalf("UnmarshalBinary() = %+v", got)
+				}
+				encoded, err := got.MarshalBinary()
+				if err != nil {
+					t.Fatalf("MarshalBinary() error = %v", err)
+				}
+				if !bytes.Equal(encoded, akaSyncFailure) {
+					t.Fatalf("MarshalBinary() = % X, want % X", encoded, akaSyncFailure)
 				}
 			},
 		},
 		{
-			name: "aka reject",
+			name: "reject",
 			check: func(t *testing.T) {
-				got, err := Authenticate3G{}.DecodeResponse(apdu.Response{0xDC, 0x00, 0x90, 0x00})
-				if err != nil {
-					t.Fatalf("DecodeResponse() error = %v", err)
+				var got Authenticate3GResult
+				if err := got.UnmarshalBinary([]byte{0xDC, 0x00}); err != nil {
+					t.Fatalf("UnmarshalBinary() error = %v", err)
 				}
 				if !got.IsAuthenticationReject() {
-					t.Fatalf("DecodeResponse() = %+v, want reject", got)
+					t.Fatalf("UnmarshalBinary() = %+v, want reject", got)
+				}
+				encoded, err := got.MarshalBinary()
+				if err != nil {
+					t.Fatalf("MarshalBinary() error = %v", err)
+				}
+				if !bytes.Equal(encoded, []byte{0xDC, 0x00}) {
+					t.Fatalf("MarshalBinary() = % X, want DC 00", encoded)
 				}
 			},
 		},
@@ -234,8 +213,9 @@ func TestAppReaders(t *testing.T) {
 		check func(t *testing.T)
 	}{
 		{
-			name: "read iccid",
+			name: "transparent file",
 			check: func(t *testing.T) {
+				data := []byte{0x98, 0x68, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0}
 				app := App{Reader: &fakeReader{
 					getFileAttributes: func(_ context.Context, file usimcard.FileRef) (usimcard.FileAttributes, error) {
 						if !bytes.Equal(file.AID, usimAID) || !bytes.Equal(file.Path, []byte{0x2F, 0xE2}) {
@@ -247,16 +227,21 @@ func TestAppReaders(t *testing.T) {
 						if req.Length != 10 {
 							t.Fatalf("ReadTransparent() length = %d, want 10", req.Length)
 						}
-						return []byte{0x98, 0x68, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0}, nil
+						return data, nil
 					},
 				}, AID: usimAID}
 
-				got, err := app.ReadICCID(context.Background(), []byte{0x2F, 0xE2})
+				want := []byte{0x98, 0x68, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0}
+				got, err := app.Transparent(context.Background(), []byte{0x2F, 0xE2}, "reading EF_ICCID")
 				if err != nil {
-					t.Fatalf("ReadICCID() error = %v", err)
+					t.Fatalf("Transparent() error = %v", err)
 				}
-				if got != "8986000000000000000" {
-					t.Fatalf("ReadICCID() = %q, want %q", got, "8986000000000000000")
+				if !bytes.Equal(got, want) {
+					t.Fatalf("Transparent() = % X, want % X", got, want)
+				}
+				clear(data)
+				if !bytes.Equal(got, want) {
+					t.Fatalf("Transparent() result aliases reader buffer: % X", got)
 				}
 			},
 		},
@@ -278,12 +263,12 @@ func TestAppReaders(t *testing.T) {
 					},
 				}, AID: isimAID}
 
-				got, err := app.ReadLinearFixedTextFirst(context.Background(), []byte{0x6F, 0x04}, "reading EF_IMPU")
+				got, err := app.FirstText(context.Background(), []byte{0x6F, 0x04}, "reading EF_IMPU")
 				if err != nil {
-					t.Fatalf("ReadLinearFixedTextFirst() error = %v", err)
+					t.Fatalf("FirstText() error = %v", err)
 				}
 				if got != "sip:test@ims" {
-					t.Fatalf("ReadLinearFixedTextFirst() = %q, want %q", got, "sip:test@ims")
+					t.Fatalf("FirstText() = %q, want %q", got, "sip:test@ims")
 				}
 			},
 		},
@@ -307,12 +292,40 @@ func TestAppReaders(t *testing.T) {
 					},
 				}, AID: isimAID}
 
-				got, err := app.ReadLinearFixedTextFirst(context.Background(), []byte{0x6F, 0x04}, "reading EF_IMPU")
+				got, err := app.FirstText(context.Background(), []byte{0x6F, 0x04}, "reading EF_IMPU")
 				if err != nil {
-					t.Fatalf("ReadLinearFixedTextFirst() error = %v", err)
+					t.Fatalf("FirstText() error = %v", err)
 				}
 				if got != "sip:next@ims" {
-					t.Fatalf("ReadLinearFixedTextFirst() = %q, want %q", got, "sip:next@ims")
+					t.Fatalf("FirstText() = %q, want %q", got, "sip:next@ims")
+				}
+			},
+		},
+		{
+			name: "linear fixed clones records",
+			check: func(t *testing.T) {
+				buf := make([]byte, 4)
+				app := App{Reader: &fakeReader{
+					getFileAttributes: func(context.Context, usimcard.FileRef) (usimcard.FileAttributes, error) {
+						return usimcard.FileAttributes{FileStructure: simfile.StructureLinearFixed, RecordSize: uint16(len(buf)), RecordCount: 2}, nil
+					},
+					readRecord: func(_ context.Context, req usimcard.RecordRead) ([]byte, error) {
+						for i := range buf {
+							buf[i] = byte(req.Record)
+						}
+						return buf, nil
+					},
+				}, AID: isimAID}
+
+				got, err := app.LinearFixed(context.Background(), []byte{0x6F, 0x04}, "reading EF_IMPU")
+				if err != nil {
+					t.Fatalf("LinearFixed() error = %v", err)
+				}
+				if len(got) != 2 {
+					t.Fatalf("len(LinearFixed()) = %d, want 2", len(got))
+				}
+				if !bytes.Equal(got[0], []byte{1, 1, 1, 1}) || !bytes.Equal(got[1], []byte{2, 2, 2, 2}) {
+					t.Fatalf("LinearFixed() = % X", got)
 				}
 			},
 		},
@@ -328,12 +341,12 @@ func TestAppReaders(t *testing.T) {
 					},
 				}, AID: isimAID}
 
-				_, err := app.ReadLinearFixedTextFirst(context.Background(), []byte{0x6F, 0x04}, "reading EF_IMPU")
+				_, err := app.FirstText(context.Background(), []byte{0x6F, 0x04}, "reading EF_IMPU")
 				if err == nil {
-					t.Fatal("ReadLinearFixedTextFirst() error = nil, want non-nil")
+					t.Fatal("FirstText() error = nil, want non-nil")
 				}
 				if !strings.Contains(err.Error(), "no populated record") {
-					t.Fatalf("ReadLinearFixedTextFirst() error = %v, want no populated record", err)
+					t.Fatalf("FirstText() error = %v, want no populated record", err)
 				}
 			},
 		},
@@ -355,12 +368,12 @@ func TestAppReaders(t *testing.T) {
 					},
 				}, AID: usimAID}
 
-				got, err := app.ReadLinearFixedTextPathFirst(context.Background(), []byte{0x7F, 0x10, 0x6F, 0xE5}, "reading EFPSISMSC")
+				got, err := app.FirstText(context.Background(), []byte{0x7F, 0x10, 0x6F, 0xE5}, "reading EFPSISMSC")
 				if err != nil {
-					t.Fatalf("ReadLinearFixedTextPathFirst() error = %v", err)
+					t.Fatalf("FirstText() error = %v", err)
 				}
 				if got != "sip:smsc@example.com" {
-					t.Fatalf("ReadLinearFixedTextPathFirst() = %q, want %q", got, "sip:smsc@example.com")
+					t.Fatalf("FirstText() = %q, want %q", got, "sip:smsc@example.com")
 				}
 			},
 		},

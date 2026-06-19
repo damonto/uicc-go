@@ -1,6 +1,9 @@
 package simfile
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
 
 func TestFCIUnmarshalBinary(t *testing.T) {
 	tests := []struct {
@@ -41,6 +44,14 @@ func TestFCIUnmarshalBinary(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Fatalf("UnmarshalBinary() = %+v, want %+v", got, tt.want)
+			}
+
+			encoded, err := got.MarshalBinary()
+			if err != nil {
+				t.Fatalf("MarshalBinary() error = %v", err)
+			}
+			if !bytes.Equal(encoded, tt.data) {
+				t.Fatalf("MarshalBinary() = % X, want % X", encoded, tt.data)
 			}
 		})
 	}

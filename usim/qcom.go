@@ -50,8 +50,8 @@ func (r *QCOM) ListApplications(ctx context.Context) ([]usimcard.Application, er
 			return nil, fmt.Errorf("reading EF_DIR record %d: %w", recordID, err)
 		}
 
-		parsed, err := command.ReadEFDirRecord{RecordSize: attrs.RecordSize}.Decode(record)
-		if err != nil {
+		var parsed simfile.EFDirRecord
+		if err := parsed.UnmarshalBinary(record); err != nil {
 			return nil, fmt.Errorf("parsing EF_DIR record %d: %w", recordID, err)
 		}
 		if len(parsed.AID) == 0 {
