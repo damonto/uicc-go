@@ -15,6 +15,9 @@ const (
 func (r *Reader) ensureSlotActivated(ctx context.Context) error {
 	slot, err := r.currentActivatedSlot(ctx)
 	if err != nil {
+		if errors.Is(err, StatusNoDeviceSupport) {
+			return nil
+		}
 		return fmt.Errorf("activating MBIM slot %d: %w", r.slot+1, err)
 	}
 	if slot == r.slot {
