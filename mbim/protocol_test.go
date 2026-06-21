@@ -141,6 +141,194 @@ func TestUICCChannelRequestData(t *testing.T) {
 	}
 }
 
+func TestUiccResetRequestData(t *testing.T) {
+	tests := []struct {
+		name        string
+		req         *Request
+		commandType CommandType
+		want        []byte
+	}{
+		{
+			name: "set",
+			req: (&UiccResetSetRequest{
+				TransactionID: 1,
+				Action:        UiccPassThroughActionEnable,
+			}).Request(),
+			commandType: CommandTypeSet,
+			want:        mustDecodeHex(t, "01000000"),
+		},
+		{
+			name:        "query",
+			req:         (&UiccResetQueryRequest{TransactionID: 1}).Request(),
+			commandType: CommandTypeQuery,
+			want:        nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			command := tt.req.Command.(*Command)
+			if command.ServiceID != ServiceMsUiccLowLevelAccess {
+				t.Fatalf("ServiceID = % X, want MS UICC low level access", command.ServiceID)
+			}
+			if command.CommandID != CIDUiccReset || command.CommandType != tt.commandType {
+				t.Fatalf("command = cid %d type %d, want cid %d type %d", command.CommandID, command.CommandType, CIDUiccReset, tt.commandType)
+			}
+			if !bytes.Equal(command.Data, tt.want) {
+				t.Fatalf("Data = %X, want %X", command.Data, tt.want)
+			}
+		})
+	}
+}
+
+func TestUiccResetResponseUnmarshalBinary(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    []byte
+		want    UiccPassThroughStatus
+		wantErr bool
+	}{
+		{
+			name: "disabled",
+			data: mustDecodeHex(t, "00000000"),
+			want: UiccPassThroughStatusDisabled,
+		},
+		{
+			name: "enabled",
+			data: mustDecodeHex(t, "01000000"),
+			want: UiccPassThroughStatusEnabled,
+		},
+		{
+			name:    "truncated",
+			data:    []byte{0x01},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got UiccResetResponse
+			err := got.UnmarshalBinary(tt.data)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("UnmarshalBinary() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if got.PassThroughStatus != tt.want {
+				t.Fatalf("PassThroughStatus = %d, want %d", got.PassThroughStatus, tt.want)
+			}
+		})
+	}
+}
+
+func TestUiccTerminalCapabilityRequestData(t *testing.T) {
+	terminalCapabilities := [][]byte{
+		{0x0A, 0x0B, 0x0C, 0x0D, 0x0A},
+		{0xA0, 0xB0, 0xC0},
+	}
+	terminalCapabilityPayload := mustDecodeHex(t, "0200000014000000050000001C000000030000000A0B0C0D0A000000A0B0C000")
+	tests := []struct {
+		name        string
+		req         *Request
+		commandType CommandType
+		want        []byte
+	}{
+		{
+			name: "set",
+			req: (&UiccTerminalCapabilitySetRequest{
+				TransactionID: 1,
+				Capabilities:  terminalCapabilities,
+			}).Request(),
+			commandType: CommandTypeSet,
+			want:        terminalCapabilityPayload,
+		},
+		{
+			name: "set empty",
+			req: (&UiccTerminalCapabilitySetRequest{
+				TransactionID: 1,
+			}).Request(),
+			commandType: CommandTypeSet,
+			want:        mustDecodeHex(t, "00000000"),
+		},
+		{
+			name:        "query",
+			req:         (&UiccTerminalCapabilityQueryRequest{TransactionID: 1}).Request(),
+			commandType: CommandTypeQuery,
+			want:        nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			command := tt.req.Command.(*Command)
+			if command.ServiceID != ServiceMsUiccLowLevelAccess {
+				t.Fatalf("ServiceID = % X, want MS UICC low level access", command.ServiceID)
+			}
+			if command.CommandID != CIDUiccTerminalCapability || command.CommandType != tt.commandType {
+				t.Fatalf("command = cid %d type %d, want cid %d type %d", command.CommandID, command.CommandType, CIDUiccTerminalCapability, tt.commandType)
+			}
+			if !bytes.Equal(command.Data, tt.want) {
+				t.Fatalf("Data = %X, want %X", command.Data, tt.want)
+			}
+		})
+	}
+}
+
+func TestUiccTerminalCapabilityResponseUnmarshalBinary(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    []byte
+		want    [][]byte
+		wantErr bool
+	}{
+		{
+			name: "empty",
+			data: mustDecodeHex(t, "00000000"),
+			want: nil,
+		},
+		{
+			name: "multiple",
+			data: mustDecodeHex(t, "0200000014000000050000001C000000030000000A0B0C0D0A000000A0B0C000"),
+			want: [][]byte{
+				{0x0A, 0x0B, 0x0C, 0x0D, 0x0A},
+				{0xA0, 0xB0, 0xC0},
+			},
+		},
+		{
+			name:    "truncated table",
+			data:    mustDecodeHex(t, "01000000"),
+			wantErr: true,
+		},
+		{
+			name:    "truncated capability",
+			data:    mustDecodeHex(t, "010000000C00000002000000AA"),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got UiccTerminalCapabilityResponse
+			err := got.UnmarshalBinary(tt.data)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("UnmarshalBinary() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if len(got.Capabilities) != len(tt.want) {
+				t.Fatalf("Capabilities length = %d, want %d", len(got.Capabilities), len(tt.want))
+			}
+			for i := range tt.want {
+				if !slices.Equal(got.Capabilities[i], tt.want[i]) {
+					t.Fatalf("Capabilities[%d] = %X, want %X", i, got.Capabilities[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestUICCChannelResponseUnmarshalBinary(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -294,6 +482,100 @@ func TestReaderUICCChannelTransmitsAPDU(t *testing.T) {
 	if err := reader.CloseChannel(ctx, channel); err != nil {
 		t.Fatalf("CloseChannel() error = %v", err)
 	}
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReaderUiccResetAndTerminalCapability(t *testing.T) {
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+
+	terminalCapabilities := [][]byte{
+		{0x0A, 0x0B, 0x0C, 0x0D, 0x0A},
+		{0xA0, 0xB0, 0xC0},
+	}
+	terminalCapabilityPayload := mustDecodeHex(t, "0200000014000000050000001C000000030000000A0B0C0D0A000000A0B0C000")
+
+	errc := make(chan error, 1)
+	go func() {
+		defer close(errc)
+		defer server.Close()
+
+		if err := expectMBIMCommandWithType(server, 1, CIDUiccReset, CommandTypeSet, mustDecodeHex(t, "01000000")); err != nil {
+			errc <- err
+			return
+		}
+		if _, err := server.Write(mbimCommandDone(1, ServiceMsUiccLowLevelAccess, CIDUiccReset, mustDecodeHex(t, "01000000"))); err != nil {
+			errc <- err
+			return
+		}
+
+		if err := expectMBIMCommandWithType(server, 2, CIDUiccReset, CommandTypeQuery, nil); err != nil {
+			errc <- err
+			return
+		}
+		if _, err := server.Write(mbimCommandDone(2, ServiceMsUiccLowLevelAccess, CIDUiccReset, mustDecodeHex(t, "00000000"))); err != nil {
+			errc <- err
+			return
+		}
+
+		if err := expectMBIMCommandWithType(server, 3, CIDUiccTerminalCapability, CommandTypeSet, terminalCapabilityPayload); err != nil {
+			errc <- err
+			return
+		}
+		if _, err := server.Write(mbimCommandDone(3, ServiceMsUiccLowLevelAccess, CIDUiccTerminalCapability, nil)); err != nil {
+			errc <- err
+			return
+		}
+
+		if err := expectMBIMCommandWithType(server, 4, CIDUiccTerminalCapability, CommandTypeQuery, nil); err != nil {
+			errc <- err
+			return
+		}
+		if _, err := server.Write(mbimCommandDone(4, ServiceMsUiccLowLevelAccess, CIDUiccTerminalCapability, terminalCapabilityPayload)); err != nil {
+			errc <- err
+			return
+		}
+	}()
+
+	reader := &Reader{conn: client}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	resetStatus, err := reader.SetUiccReset(ctx, UiccPassThroughActionEnable)
+	if err != nil {
+		t.Fatalf("SetUiccReset() error = %v", err)
+	}
+	if resetStatus != UiccPassThroughStatusEnabled {
+		t.Fatalf("SetUiccReset() status = %d, want %d", resetStatus, UiccPassThroughStatusEnabled)
+	}
+
+	resetStatus, err = reader.QueryUiccReset(ctx)
+	if err != nil {
+		t.Fatalf("QueryUiccReset() error = %v", err)
+	}
+	if resetStatus != UiccPassThroughStatusDisabled {
+		t.Fatalf("QueryUiccReset() status = %d, want %d", resetStatus, UiccPassThroughStatusDisabled)
+	}
+
+	if err := reader.SetUiccTerminalCapability(ctx, terminalCapabilities); err != nil {
+		t.Fatalf("SetUiccTerminalCapability() error = %v", err)
+	}
+
+	gotCapabilities, err := reader.QueryUiccTerminalCapability(ctx)
+	if err != nil {
+		t.Fatalf("QueryUiccTerminalCapability() error = %v", err)
+	}
+	if len(gotCapabilities) != len(terminalCapabilities) {
+		t.Fatalf("QueryUiccTerminalCapability() length = %d, want %d", len(gotCapabilities), len(terminalCapabilities))
+	}
+	for i := range terminalCapabilities {
+		if !slices.Equal(gotCapabilities[i], terminalCapabilities[i]) {
+			t.Fatalf("QueryUiccTerminalCapability()[%d] = %X, want %X", i, gotCapabilities[i], terminalCapabilities[i])
+		}
+	}
+
 	if err := <-errc; err != nil {
 		t.Fatal(err)
 	}
@@ -660,6 +942,10 @@ func mustDecodeHex(t *testing.T, s string) []byte {
 }
 
 func expectMBIMCommand(conn net.Conn, transactionID, commandID uint32, wantData []byte) error {
+	return expectMBIMCommandWithType(conn, transactionID, commandID, CommandTypeSet, wantData)
+}
+
+func expectMBIMCommandWithType(conn net.Conn, transactionID, commandID uint32, commandType CommandType, wantData []byte) error {
 	frame, err := readFrame(conn)
 	if err != nil {
 		return err
@@ -675,8 +961,8 @@ func expectMBIMCommand(conn net.Conn, transactionID, commandID uint32, wantData 
 	if got := binary.LittleEndian.Uint32(frame[36:40]); got != commandID {
 		return fmt.Errorf("command ID = %d, want %d", got, commandID)
 	}
-	if got := CommandType(binary.LittleEndian.Uint32(frame[40:44])); got != CommandTypeSet {
-		return fmt.Errorf("command type = %d, want set", got)
+	if got := CommandType(binary.LittleEndian.Uint32(frame[40:44])); got != commandType {
+		return fmt.Errorf("command type = %d, want %d", got, commandType)
 	}
 	dataLength := binary.LittleEndian.Uint32(frame[44:48])
 	if dataLength > uint32(len(frame)-48) {

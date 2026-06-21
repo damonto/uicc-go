@@ -683,6 +683,129 @@ func (r *APDUResponse) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
+type UiccTerminalCapabilitySetRequest struct {
+	TransactionID uint32
+	Capabilities  [][]byte
+}
+
+func (r *UiccTerminalCapabilitySetRequest) Request() *Request {
+	return &Request{
+		MessageType:   MessageTypeCommand,
+		TransactionID: r.TransactionID,
+		Command: command(
+			ServiceMsUiccLowLevelAccess,
+			CIDUiccTerminalCapability,
+			CommandTypeSet,
+			terminalCapabilityData(r.Capabilities),
+		),
+	}
+}
+
+type UiccTerminalCapabilityQueryRequest struct {
+	TransactionID uint32
+	Response      *UiccTerminalCapabilityResponse
+}
+
+func (r *UiccTerminalCapabilityQueryRequest) Request() *Request {
+	r.Response = new(UiccTerminalCapabilityResponse)
+	return &Request{
+		MessageType:   MessageTypeCommand,
+		TransactionID: r.TransactionID,
+		Command: command(
+			ServiceMsUiccLowLevelAccess,
+			CIDUiccTerminalCapability,
+			CommandTypeQuery,
+			nil,
+		),
+		Response: r.Response,
+	}
+}
+
+type UiccTerminalCapabilityResponse struct {
+	Capabilities [][]byte
+}
+
+func (r *UiccTerminalCapabilityResponse) UnmarshalBinary(data []byte) error {
+	if len(data) < 4 {
+		return errors.New("parsing MBIM terminal capability: payload is truncated")
+	}
+	capabilityCount := binary.LittleEndian.Uint32(data[:4])
+	if capabilityCount == 0 {
+		r.Capabilities = nil
+		return nil
+	}
+	if capabilityCount > uint32((len(data)-4)/8) {
+		return errors.New("parsing MBIM terminal capability: capability table is truncated")
+	}
+
+	r.Capabilities = make([][]byte, capabilityCount)
+	for i := range capabilityCount {
+		entryOffset := 4 + i*8
+		capabilityOffset := binary.LittleEndian.Uint32(data[entryOffset : entryOffset+4])
+		capabilitySize := binary.LittleEndian.Uint32(data[entryOffset+4 : entryOffset+8])
+		if capabilityOffset > uint32(len(data)) || capabilitySize > uint32(len(data))-capabilityOffset {
+			return errors.New("parsing MBIM terminal capability: capability data is truncated")
+		}
+		r.Capabilities[i] = slices.Clone(data[capabilityOffset : capabilityOffset+capabilitySize])
+	}
+	return nil
+}
+
+type UiccResetSetRequest struct {
+	TransactionID uint32
+	Action        UiccPassThroughAction
+	Response      *UiccResetResponse
+}
+
+func (r *UiccResetSetRequest) Request() *Request {
+	data := binary.LittleEndian.AppendUint32(nil, uint32(r.Action))
+
+	r.Response = new(UiccResetResponse)
+	return &Request{
+		MessageType:   MessageTypeCommand,
+		TransactionID: r.TransactionID,
+		Command: command(
+			ServiceMsUiccLowLevelAccess,
+			CIDUiccReset,
+			CommandTypeSet,
+			data,
+		),
+		Response: r.Response,
+	}
+}
+
+type UiccResetQueryRequest struct {
+	TransactionID uint32
+	Response      *UiccResetResponse
+}
+
+func (r *UiccResetQueryRequest) Request() *Request {
+	r.Response = new(UiccResetResponse)
+	return &Request{
+		MessageType:   MessageTypeCommand,
+		TransactionID: r.TransactionID,
+		Command: command(
+			ServiceMsUiccLowLevelAccess,
+			CIDUiccReset,
+			CommandTypeQuery,
+			nil,
+		),
+		Response: r.Response,
+	}
+}
+
+type UiccResetResponse struct {
+	PassThroughStatus UiccPassThroughStatus
+}
+
+func (r *UiccResetResponse) UnmarshalBinary(data []byte) error {
+	if len(data) < 4 {
+		return errors.New("parsing MBIM UICC reset: payload is truncated")
+	}
+	r.PassThroughStatus = UiccPassThroughStatus(binary.LittleEndian.Uint32(data[:4]))
+	return nil
+}
+
 type STKEnvelopeRequest struct {
 	TransactionID uint32
 	Data          []byte
@@ -743,6 +866,24 @@ func uiccByteArrayRef(data []byte, fieldOffset uint32) ([]byte, error) {
 		return nil, errors.New("value is truncated")
 	}
 	return slices.Clone(data[offset : offset+size]), nil
+}
+
+func terminalCapabilityData(capabilities [][]byte) []byte {
+	capabilityCount := uint32(len(capabilities))
+	data := binary.LittleEndian.AppendUint32(nil, capabilityCount)
+	capabilityOffset := 4 + len(capabilities)*8
+	for _, capability := range capabilities {
+		data = binary.LittleEndian.AppendUint32(data, uint32(capabilityOffset))
+		data = binary.LittleEndian.AppendUint32(data, uint32(len(capability)))
+		capabilityOffset = align4(capabilityOffset + len(capability))
+	}
+	for _, capability := range capabilities {
+		data = append(data, capability...)
+		for len(data)%4 != 0 {
+			data = append(data, 0)
+		}
+	}
+	return data
 }
 
 func refHeader(baseOffset int, refs ...[]byte) []byte {

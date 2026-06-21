@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 )
 
 type fakeTransport struct {
+	mu         sync.Mutex
 	t          *testing.T
 	calls      []transportCall
 	idx        int
@@ -28,12 +30,16 @@ type transportCall struct {
 
 func (t *fakeTransport) Do(_ context.Context, req qcom.Request) (qcom.Response, error) {
 	t.t.Helper()
+	t.mu.Lock()
 	if t.idx >= len(t.calls) {
+		t.mu.Unlock()
 		t.t.Fatalf("Do() got unexpected request: %+v", req)
 	}
 
 	call := t.calls[t.idx]
 	t.idx++
+	t.mu.Unlock()
+
 	if call.check != nil {
 		call.check(req)
 	}
@@ -44,8 +50,16 @@ func (t *fakeTransport) Do(_ context.Context, req qcom.Request) (qcom.Response, 
 }
 
 func (t *fakeTransport) Close() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.closeCalls++
 	return t.closeErr
+}
+
+func (t *fakeTransport) callCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.idx
 }
 
 func TestReaderUIMMessages(t *testing.T) {

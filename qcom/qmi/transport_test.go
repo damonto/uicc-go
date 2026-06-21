@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -145,12 +146,16 @@ func TestResponseUnmarshalBinary(t *testing.T) {
 	}
 }
 
-func TestTransportClearsReadDeadlineOnce(t *testing.T) {
+func TestTransportDispatchesIndications(t *testing.T) {
 	mismatch := []byte{
 		0x01, 0x18, 0x00, 0x80, 0x0B, 0x07,
 		0x02, 0x09, 0x00, 0x20, 0x00, 0x0C, 0x00,
 		0x02, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
 		0x10, 0x02, 0x00, 0x90, 0x00,
+	}
+	indication := []byte{
+		0x01, 0x0C, 0x00, 0x80, 0x0B, 0x07,
+		0x04, 0x00, 0x00, 0x48, 0x00, 0x00, 0x00,
 	}
 	match := []byte{
 		0x01, 0x18, 0x00, 0x80, 0x0B, 0x07,
@@ -158,10 +163,17 @@ func TestTransportClearsReadDeadlineOnce(t *testing.T) {
 		0x02, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
 		0x10, 0x02, 0x00, 0x90, 0x00,
 	}
-	conn := &deadlineConn{read: bytes.NewReader(append(mismatch, match...))}
+	conn := &deadlineConn{read: bytes.NewReader(joinFrames(mismatch, indication, match))}
 	transport := New(conn)
 
-	_, err := transport.Do(context.Background(), qcom.Request{
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	indications, err := transport.Indications(ctx, qcom.ServiceUIM, 7, qcom.MessageSlotStatus)
+	if err != nil {
+		t.Fatalf("Indications() error = %v", err)
+	}
+
+	_, err = transport.Do(context.Background(), qcom.Request{
 		Service:       qcom.ServiceUIM,
 		ClientID:      7,
 		TransactionID: 3,
@@ -171,17 +183,106 @@ func TestTransportClearsReadDeadlineOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Do() error = %v", err)
 	}
-	if len(conn.readDeadlines) != 2 {
-		t.Fatalf("read deadlines = %d, want set and clear", len(conn.readDeadlines))
+
+	select {
+	case ind := <-indications:
+		if ind.Service != qcom.ServiceUIM || ind.ClientID != 7 || ind.MessageID != qcom.MessageSlotStatus {
+			t.Fatalf("indication = %+v, want slot status for client 7", ind)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for indication")
 	}
-	if conn.readDeadlines[0].IsZero() || !conn.readDeadlines[1].IsZero() {
-		t.Fatalf("read deadlines = %+v, want non-zero then zero", conn.readDeadlines)
+}
+
+func TestTransportClearsWriteDeadlineBeforeNextWrite(t *testing.T) {
+	conn := newAsyncDeadlineConn()
+	transport := New(conn)
+	defer transport.Close()
+
+	errs := make(chan error, 2)
+	go func() {
+		_, err := transport.Do(context.Background(), qcom.Request{
+			Service:       qcom.ServiceUIM,
+			ClientID:      7,
+			TransactionID: 3,
+			MessageID:     qcom.MessageReadTransparent,
+			Timeout:       time.Second,
+		})
+		errs <- err
+	}()
+	conn.waitWrites(t, 1)
+
+	go func() {
+		_, err := transport.Do(context.Background(), qcom.Request{
+			Service:       qcom.ServiceUIM,
+			ClientID:      7,
+			TransactionID: 4,
+			MessageID:     qcom.MessageAuthenticate,
+		})
+		errs <- err
+	}()
+	conn.waitWrites(t, 2)
+
+	deadlines := conn.deadlinesAtWrite()
+	if deadlines[0].IsZero() {
+		t.Fatal("first write deadline is zero, want request timeout deadline")
+	}
+	if !deadlines[1].IsZero() {
+		t.Fatalf("second write deadline = %v, want zero", deadlines[1])
+	}
+
+	conn.frames <- serviceResultFrame(3, qcom.MessageReadTransparent)
+	conn.frames <- serviceResultFrame(4, qcom.MessageAuthenticate)
+	for range 2 {
+		select {
+		case err := <-errs:
+			if err != nil {
+				t.Fatalf("Do() error = %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for Do()")
+		}
+	}
+}
+
+func TestTransportCanUnsubscribeWhileDeliveringIndication(t *testing.T) {
+	transport := New(&deadlineConn{})
+	ind := qcom.Indication{
+		Service:   qcom.ServiceUIM,
+		ClientID:  7,
+		MessageID: qcom.MessageSlotStatus,
+	}
+
+	for range 1000 {
+		ch := make(chan qcom.Indication, 1)
+		transport.mu.Lock()
+		transport.nextSub++
+		id := transport.nextSub
+		transport.subs[id] = subscription{
+			service: qcom.ServiceUIM,
+			client:  7,
+			message: qcom.MessageSlotStatus,
+			ch:      ch,
+		}
+		transport.mu.Unlock()
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			transport.deliverIndication(ind)
+		}()
+		transport.removeSubscription(id)
+
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for indication delivery")
+		}
 	}
 }
 
 type deadlineConn struct {
-	read          *bytes.Reader
-	readDeadlines []time.Time
+	read *bytes.Reader
 }
 
 func (c *deadlineConn) Read(p []byte) (int, error) {
@@ -191,12 +292,113 @@ func (c *deadlineConn) Read(p []byte) (int, error) {
 	return c.read.Read(p)
 }
 
-func (c *deadlineConn) Write(p []byte) (int, error) { return len(p), nil }
-func (c *deadlineConn) Close() error                { return nil }
+func (c *deadlineConn) Write(p []byte) (int, error)      { return len(p), nil }
+func (c *deadlineConn) Close() error                     { return nil }
+func (c *deadlineConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *deadlineConn) SetWriteDeadline(time.Time) error { return nil }
 
-func (c *deadlineConn) SetReadDeadline(t time.Time) error {
-	c.readDeadlines = append(c.readDeadlines, t)
+type asyncDeadlineConn struct {
+	mu             sync.Mutex
+	frames         chan []byte
+	readBuf        []byte
+	writeDeadline  time.Time
+	writeDeadlines []time.Time
+	writeSignals   chan struct{}
+	closeOnce      sync.Once
+}
+
+func newAsyncDeadlineConn() *asyncDeadlineConn {
+	return &asyncDeadlineConn{
+		frames:       make(chan []byte, 4),
+		writeSignals: make(chan struct{}, 4),
+	}
+}
+
+func (c *asyncDeadlineConn) Read(p []byte) (int, error) {
+	for {
+		c.mu.Lock()
+		if len(c.readBuf) > 0 {
+			n := copy(p, c.readBuf)
+			c.readBuf = c.readBuf[n:]
+			c.mu.Unlock()
+			return n, nil
+		}
+		c.mu.Unlock()
+
+		frame, ok := <-c.frames
+		if !ok {
+			return 0, io.EOF
+		}
+		c.mu.Lock()
+		c.readBuf = append(c.readBuf, frame...)
+		c.mu.Unlock()
+	}
+}
+
+func (c *asyncDeadlineConn) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	c.writeDeadlines = append(c.writeDeadlines, c.writeDeadline)
+	c.mu.Unlock()
+
+	select {
+	case c.writeSignals <- struct{}{}:
+	default:
+	}
+	return len(p), nil
+}
+
+func (c *asyncDeadlineConn) Close() error {
+	c.closeOnce.Do(func() {
+		close(c.frames)
+	})
 	return nil
 }
 
-func (c *deadlineConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *asyncDeadlineConn) SetReadDeadline(time.Time) error { return nil }
+
+func (c *asyncDeadlineConn) SetWriteDeadline(t time.Time) error {
+	c.mu.Lock()
+	c.writeDeadline = t
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *asyncDeadlineConn) waitWrites(tb testing.TB, want int) {
+	tb.Helper()
+	deadline := time.After(time.Second)
+	for {
+		c.mu.Lock()
+		got := len(c.writeDeadlines)
+		c.mu.Unlock()
+		if got >= want {
+			return
+		}
+		select {
+		case <-c.writeSignals:
+		case <-deadline:
+			tb.Fatalf("writes = %d, want at least %d", got, want)
+		}
+	}
+}
+
+func (c *asyncDeadlineConn) deadlinesAtWrite() []time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]time.Time(nil), c.writeDeadlines...)
+}
+
+func serviceResultFrame(txn uint16, message qcom.MessageID) []byte {
+	return []byte{
+		0x01, 0x13, 0x00, 0x80, byte(qcom.ServiceUIM), 0x07,
+		byte(qcom.MessageTypeResponse), byte(txn), byte(txn >> 8), byte(message), byte(message >> 8), 0x07, 0x00,
+		0x02, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+}
+
+func joinFrames(frames ...[]byte) []byte {
+	var out []byte
+	for _, frame := range frames {
+		out = append(out, frame...)
+	}
+	return out
+}

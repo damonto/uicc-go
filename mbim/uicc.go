@@ -105,6 +105,72 @@ func (r *Reader) TransmitAPDU(ctx context.Context, channel uint32, command []byt
 	return slices.Clone(request.Response.Response), request.Response.Status, nil
 }
 
+func (r *Reader) SetUiccReset(ctx context.Context, action UiccPassThroughAction) (UiccPassThroughStatus, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed {
+		return 0, errors.New("setting MBIM UICC reset: reader is closed")
+	}
+
+	request := UiccResetSetRequest{
+		TransactionID: r.nextTransactionID(),
+		Action:        action,
+	}
+	if err := request.Request().Transmit(ctx, r.conn); err != nil {
+		return 0, fmt.Errorf("setting MBIM UICC reset: %w", err)
+	}
+	return request.Response.PassThroughStatus, nil
+}
+
+func (r *Reader) QueryUiccReset(ctx context.Context) (UiccPassThroughStatus, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed {
+		return 0, errors.New("querying MBIM UICC reset: reader is closed")
+	}
+
+	request := UiccResetQueryRequest{TransactionID: r.nextTransactionID()}
+	if err := request.Request().Transmit(ctx, r.conn); err != nil {
+		return 0, fmt.Errorf("querying MBIM UICC reset: %w", err)
+	}
+	return request.Response.PassThroughStatus, nil
+}
+
+func (r *Reader) SetUiccTerminalCapability(ctx context.Context, capabilities [][]byte) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed {
+		return errors.New("setting MBIM UICC terminal capability: reader is closed")
+	}
+
+	request := UiccTerminalCapabilitySetRequest{
+		TransactionID: r.nextTransactionID(),
+		Capabilities:  cloneByteSlices(capabilities),
+	}
+	if err := request.Request().Transmit(ctx, r.conn); err != nil {
+		return fmt.Errorf("setting MBIM UICC terminal capability: %w", err)
+	}
+	return nil
+}
+
+func (r *Reader) QueryUiccTerminalCapability(ctx context.Context) ([][]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed {
+		return nil, errors.New("querying MBIM UICC terminal capability: reader is closed")
+	}
+
+	request := UiccTerminalCapabilityQueryRequest{TransactionID: r.nextTransactionID()}
+	if err := request.Request().Transmit(ctx, r.conn); err != nil {
+		return nil, fmt.Errorf("querying MBIM UICC terminal capability: %w", err)
+	}
+	return cloneByteSlices(request.Response.Capabilities), nil
+}
+
 func (r *Reader) CloseChannel(ctx context.Context, channel uint32) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -140,6 +206,17 @@ func (r *Reader) STKEnvelope(ctx context.Context, data []byte) error {
 		return fmt.Errorf("running MBIM STK envelope: %w", err)
 	}
 	return nil
+}
+
+func cloneByteSlices(values [][]byte) [][]byte {
+	if values == nil {
+		return nil
+	}
+	clones := make([][]byte, len(values))
+	for i, value := range values {
+		clones[i] = slices.Clone(value)
+	}
+	return clones
 }
 
 func uiccStatusError(action string, status uint32) error {

@@ -68,6 +68,20 @@ const (
 	UiccClassByteTypeExtended
 )
 
+type UiccPassThroughAction uint32
+
+const (
+	UiccPassThroughActionDisable UiccPassThroughAction = iota
+	UiccPassThroughActionEnable
+)
+
+type UiccPassThroughStatus uint32
+
+const (
+	UiccPassThroughStatusDisabled UiccPassThroughStatus = iota
+	UiccPassThroughStatusEnabled
+)
+
 type UiccFileAccessibility uint32
 
 const (

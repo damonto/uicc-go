@@ -30,27 +30,37 @@ func (r Response) QCOM() qcom.Response {
 	}
 }
 
+func (r Response) QCOMIndication() qcom.Indication {
+	return qcom.Indication{
+		Service:       r.ServiceType,
+		ClientID:      r.ClientID,
+		TransactionID: r.TransactionID,
+		MessageID:     r.MessageID,
+		TLVs:          r.TLVs,
+	}
+}
+
 func (r *Response) UnmarshalBinary(data []byte) error {
 	*r = Response{}
 	if len(data) < 12 {
-		return fmt.Errorf("parsing QMI response: data too short: got %d bytes", len(data))
+		return fmt.Errorf("parsing QMI message: data too short: got %d bytes", len(data))
 	}
 
 	reader := bytes.NewReader(data)
 	if err := binary.Read(reader, binary.LittleEndian, &r.QMUXHeader); err != nil {
-		return fmt.Errorf("parsing QMI response: read QMUX header: %w", err)
+		return fmt.Errorf("parsing QMI message: read QMUX header: %w", err)
 	}
 	if r.QMUXHeader.IfType != qcom.QMUXIfType {
-		return fmt.Errorf("parsing QMI response: unexpected QMUX marker 0x%02X", r.QMUXHeader.IfType)
+		return fmt.Errorf("parsing QMI message: unexpected QMUX marker 0x%02X", r.QMUXHeader.IfType)
 	}
 	if got, want := len(data), int(r.QMUXHeader.Length)+1; got != want {
-		return fmt.Errorf("parsing QMI response: QMUX length mismatch: got %d bytes, header declares %d", got, want)
+		return fmt.Errorf("parsing QMI message: QMUX length mismatch: got %d bytes, header declares %d", got, want)
 	}
 
 	if r.QMUXHeader.ServiceType == qcom.ServiceControl {
 		var header Header[uint8]
 		if err := binary.Read(reader, binary.LittleEndian, &header); err != nil {
-			return fmt.Errorf("parsing QMI response: read control QMI header: %w", err)
+			return fmt.Errorf("parsing QMI message: read control QMI header: %w", err)
 		}
 		r.MessageType = header.MessageType
 		r.TransactionID = uint16(header.TransactionID)
@@ -59,7 +69,7 @@ func (r *Response) UnmarshalBinary(data []byte) error {
 	} else {
 		var header Header[uint16]
 		if err := binary.Read(reader, binary.LittleEndian, &header); err != nil {
-			return fmt.Errorf("parsing QMI response: read service QMI header: %w", err)
+			return fmt.Errorf("parsing QMI message: read service QMI header: %w", err)
 		}
 		r.MessageType = header.MessageType
 		r.TransactionID = header.TransactionID
@@ -67,15 +77,15 @@ func (r *Response) UnmarshalBinary(data []byte) error {
 		r.MessageLength = header.MessageLength
 	}
 
-	wantMessageType := qcom.MessageTypeResponse
 	if r.QMUXHeader.ServiceType == qcom.ServiceControl {
-		wantMessageType = 0x01
-	}
-	if r.MessageType != wantMessageType {
-		return fmt.Errorf("parsing QMI response: unexpected message type 0x%02X", r.MessageType)
+		if r.MessageType != 0x01 {
+			return fmt.Errorf("parsing QMI message: unexpected control message type 0x%02X", r.MessageType)
+		}
+	} else if r.MessageType != qcom.MessageTypeResponse && r.MessageType != qcom.MessageTypeIndication {
+		return fmt.Errorf("parsing QMI message: unexpected message type 0x%02X", r.MessageType)
 	}
 	if got, want := reader.Len(), int(r.MessageLength); got != want {
-		return fmt.Errorf("parsing QMI response: QMI TLV length mismatch: got %d bytes, header declares %d", got, want)
+		return fmt.Errorf("parsing QMI message: QMI TLV length mismatch: got %d bytes, header declares %d", got, want)
 	}
 	if r.MessageLength > 0 {
 		if err := r.TLVs.UnmarshalBinary(data[len(data)-int(r.MessageLength):]); err != nil {

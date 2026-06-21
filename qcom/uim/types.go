@@ -226,3 +226,44 @@ type SendAPDURequest struct {
 type SendAPDUResponse struct {
 	Response []byte
 }
+
+type RefreshStage uint8
+
+const (
+	RefreshStageWaitForOK RefreshStage = iota
+	RefreshStageStart
+	RefreshStageEndWithSuccess
+	RefreshStageEndWithFailure
+)
+
+type RefreshMode uint8
+
+const (
+	RefreshModeReset RefreshMode = iota
+	RefreshModeInit
+	RefreshModeInitFCN
+	RefreshModeFCN
+	RefreshModeInitFullFCN
+	RefreshModeApplicationReset
+	RefreshMode3GReset
+)
+
+type RefreshFile struct {
+	FileID uint16
+	Path   []byte
+}
+
+type RefreshEvent struct {
+	Stage   RefreshStage
+	Mode    RefreshMode
+	Session Session
+	AID     []byte
+	Files   []RefreshFile
+}
+
+type RefreshRegisterRequest struct {
+	Session     Session
+	AID         []byte
+	VoteForInit bool
+	Files       []RefreshFile
+}

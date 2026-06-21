@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -37,65 +38,259 @@ func (r Request) MarshalBinary() ([]byte, error) {
 
 type Transport struct {
 	conn Conn
-	mu   sync.Mutex
+
+	writeMu  sync.Mutex
+	readOnce sync.Once
+	mu       sync.Mutex
+	pending  map[messageKey]chan responseResult
+	subs     map[uint64]subscription
+	nextSub  uint64
+	readErr  error
+	closed   bool
 }
 
 func New(conn Conn) *Transport {
-	return &Transport{conn: conn}
+	return &Transport{
+		conn:    conn,
+		pending: make(map[messageKey]chan responseResult),
+		subs:    make(map[uint64]subscription),
+	}
 }
 
 func (t *Transport) Close() error {
-	return t.conn.Close()
+	err := t.conn.Close()
+	t.failAll(errors.New("QMI transport is closed"))
+	return err
 }
 
 func (t *Transport) Do(ctx context.Context, req qcom.Request) (qcom.Response, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	packet, err := (Request{Request: req}).MarshalBinary()
 	if err != nil {
 		return qcom.Response{}, err
 	}
 
+	waitCtx, cancel := requestContext(ctx, req.Timeout)
+	defer cancel()
+
+	key := messageKey{
+		service: qcom.ServiceControl,
+		client:  req.ClientID,
+		txn:     req.TransactionID,
+		message: req.MessageID,
+	}
+	if req.Service != qcom.ServiceControl {
+		key.service = req.Service
+	}
+	result := make(chan responseResult, 1)
+	if err := t.addPending(key, result); err != nil {
+		return qcom.Response{}, err
+	}
+	t.startReader()
+
 	deadline, hasDeadline := qcom.RequestDeadline(ctx, req.Timeout)
+	t.writeMu.Lock()
 	if hasDeadline {
 		if err := t.conn.SetWriteDeadline(deadline); err != nil {
+			t.writeMu.Unlock()
+			t.removePending(key)
 			return qcom.Response{}, fmt.Errorf("setting QMI write deadline: %w", err)
 		}
-		defer func() { _ = t.conn.SetWriteDeadline(time.Time{}) }()
 	}
-	if err := writeFull(t.conn, packet); err != nil {
-		return qcom.Response{}, fmt.Errorf("writing QMI request: %w", err)
-	}
-
+	writeErr := writeFull(t.conn, packet)
 	if hasDeadline {
-		if err := t.conn.SetReadDeadline(deadline); err != nil {
-			return qcom.Response{}, fmt.Errorf("setting QMI read deadline: %w", err)
-		}
-		defer func() { _ = t.conn.SetReadDeadline(time.Time{}) }()
+		_ = t.conn.SetWriteDeadline(time.Time{})
+	}
+	t.writeMu.Unlock()
+	if writeErr != nil {
+		t.removePending(key)
+		return qcom.Response{}, fmt.Errorf("writing QMI request: %w", writeErr)
 	}
 
+	select {
+	case result := <-result:
+		return result.resp, result.err
+	case <-waitCtx.Done():
+		t.removePending(key)
+		return qcom.Response{}, waitCtx.Err()
+	}
+}
+
+func (t *Transport) Indications(ctx context.Context, service qcom.ServiceType, clientID uint8, id qcom.MessageID) (<-chan qcom.Indication, error) {
+	ch := make(chan qcom.Indication, 16)
+	sub := subscription{service: service, client: clientID, message: id, ch: ch}
+
+	t.mu.Lock()
+	if t.readErr != nil {
+		t.mu.Unlock()
+		close(ch)
+		return nil, t.readErr
+	}
+	if t.closed {
+		t.mu.Unlock()
+		close(ch)
+		return nil, errors.New("QMI transport is closed")
+	}
+	t.nextSub++
+	idn := t.nextSub
+	t.subs[idn] = sub
+	t.mu.Unlock()
+
+	t.startReader()
+	go func() {
+		<-ctx.Done()
+		t.removeSubscription(idn)
+	}()
+	return ch, nil
+}
+
+type messageKey struct {
+	service qcom.ServiceType
+	client  uint8
+	txn     uint16
+	message qcom.MessageID
+}
+
+type responseResult struct {
+	resp qcom.Response
+	err  error
+}
+
+type subscription struct {
+	service qcom.ServiceType
+	client  uint8
+	message qcom.MessageID
+	ch      chan qcom.Indication
+}
+
+func requestContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	deadline, ok := qcom.RequestDeadline(ctx, timeout)
+	if !ok {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(ctx, deadline)
+}
+
+func (t *Transport) addPending(key messageKey, ch chan responseResult) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.readErr != nil {
+		return t.readErr
+	}
+	if t.closed {
+		return errors.New("QMI transport is closed")
+	}
+	if _, ok := t.pending[key]; ok {
+		return errors.New("QMI request is already pending")
+	}
+	t.pending[key] = ch
+	return nil
+}
+
+func (t *Transport) removePending(key messageKey) {
+	t.mu.Lock()
+	delete(t.pending, key)
+	t.mu.Unlock()
+}
+
+func (t *Transport) removeSubscription(id uint64) {
+	t.mu.Lock()
+	sub, ok := t.subs[id]
+	if ok {
+		delete(t.subs, id)
+	}
+	t.mu.Unlock()
+	if ok {
+		close(sub.ch)
+	}
+}
+
+func (t *Transport) startReader() {
+	t.readOnce.Do(func() {
+		go t.readLoop()
+	})
+}
+
+func (t *Transport) readLoop() {
 	for {
 		frame, err := ReadFrame(t.conn)
 		if err != nil {
-			if ctx.Err() != nil {
-				return qcom.Response{}, ctx.Err()
-			}
-			return qcom.Response{}, fmt.Errorf("reading QMI response: %w", err)
+			t.failAll(fmt.Errorf("reading QMI message: %w", err))
+			return
 		}
 
 		var wire Response
 		if err := wire.UnmarshalBinary(frame); err != nil {
-			return qcom.Response{}, err
+			t.failAll(err)
+			return
 		}
-		resp := wire.QCOM()
-		if resp.Service != req.Service || resp.TransactionID != req.TransactionID || resp.MessageID != req.MessageID {
-			continue
+		switch wire.MessageType {
+		case qcom.MessageTypeResponse, 0x01:
+			t.deliverResponse(wire.QCOM())
+		case qcom.MessageTypeIndication:
+			t.deliverIndication(wire.QCOMIndication())
 		}
-		if req.Service != qcom.ServiceControl && resp.ClientID != req.ClientID {
-			continue
+	}
+}
+
+func (t *Transport) deliverResponse(resp qcom.Response) {
+	key := messageKey{
+		service: resp.Service,
+		client:  resp.ClientID,
+		txn:     resp.TransactionID,
+		message: resp.MessageID,
+	}
+	if resp.Service == qcom.ServiceControl {
+		key.client = 0
+	}
+
+	t.mu.Lock()
+	ch, ok := t.pending[key]
+	if ok {
+		delete(t.pending, key)
+	}
+	t.mu.Unlock()
+	if ok {
+		ch <- responseResult{resp: resp}
+	}
+}
+
+func (t *Transport) deliverIndication(ind qcom.Indication) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	for _, sub := range t.subs {
+		if sub.service == ind.Service && sub.client == ind.ClientID && sub.message == ind.MessageID {
+			trySendIndication(sub.ch, ind)
 		}
-		return resp, nil
+	}
+}
+
+func trySendIndication(ch chan qcom.Indication, ind qcom.Indication) {
+	select {
+	case ch <- ind:
+	default:
+	}
+}
+
+func (t *Transport) failAll(err error) {
+	t.mu.Lock()
+	if t.closed {
+		t.mu.Unlock()
+		return
+	}
+	t.closed = true
+	t.readErr = err
+	pending := t.pending
+	t.pending = make(map[messageKey]chan responseResult)
+	subs := t.subs
+	t.subs = make(map[uint64]subscription)
+	t.mu.Unlock()
+
+	for _, ch := range pending {
+		ch <- responseResult{err: err}
+	}
+	for _, sub := range subs {
+		close(sub.ch)
 	}
 }
 

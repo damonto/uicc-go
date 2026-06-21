@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -47,26 +48,31 @@ func (d *fakeProxyDialer) device() string { return d.devicePath }
 type scriptConn struct {
 	read   *bytes.Reader
 	write  bytes.Buffer
+	ready  chan struct{}
+	once   sync.Once
 	closed bool
 }
 
 func newScriptConn(data []byte) *scriptConn {
-	return &scriptConn{read: bytes.NewReader(data)}
+	return &scriptConn{read: bytes.NewReader(data), ready: make(chan struct{})}
 }
 
 func (c *scriptConn) Read(p []byte) (int, error) {
 	if c.read == nil {
 		return 0, io.EOF
 	}
+	<-c.ready
 	return c.read.Read(p)
 }
 
 func (c *scriptConn) Write(p []byte) (int, error) {
+	c.once.Do(func() { close(c.ready) })
 	return c.write.Write(p)
 }
 
 func (c *scriptConn) Close() error {
 	c.closed = true
+	c.once.Do(func() { close(c.ready) })
 	return nil
 }
 

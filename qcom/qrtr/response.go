@@ -26,28 +26,37 @@ func (r Response) QCOM() qcom.Response {
 	}
 }
 
+func (r Response) QCOMIndication() qcom.Indication {
+	return qcom.Indication{
+		Service:       qcom.ServiceUIM,
+		TransactionID: r.TransactionID,
+		MessageID:     r.MessageID,
+		TLVs:          r.TLVs,
+	}
+}
+
 func (r *Response) UnmarshalBinary(data []byte) error {
 	*r = Response{}
 	const headerLen = 7
 	if len(data) < headerLen {
-		return fmt.Errorf("parsing QRTR response: data too short: got %d bytes", len(data))
+		return fmt.Errorf("parsing QRTR QMI message: data too short: got %d bytes", len(data))
 	}
 
 	reader := bytes.NewReader(data)
 	var header Header
 	if err := binary.Read(reader, binary.LittleEndian, &header); err != nil {
-		return fmt.Errorf("parsing QRTR response: read QMI header: %w", err)
+		return fmt.Errorf("parsing QRTR QMI message: read QMI header: %w", err)
 	}
 	r.MessageType = header.MessageType
 	r.TransactionID = header.TransactionID
 	r.MessageID = header.MessageID
 	r.MessageLength = header.MessageLength
 
-	if r.MessageType != qcom.MessageTypeResponse {
-		return fmt.Errorf("parsing QRTR response: unexpected message type 0x%02X", r.MessageType)
+	if r.MessageType != qcom.MessageTypeResponse && r.MessageType != qcom.MessageTypeIndication {
+		return fmt.Errorf("parsing QRTR QMI message: unexpected message type 0x%02X", r.MessageType)
 	}
 	if got, want := reader.Len(), int(r.MessageLength); got != want {
-		return fmt.Errorf("parsing QRTR response: QMI TLV length mismatch: got %d bytes, header declares %d", got, want)
+		return fmt.Errorf("parsing QRTR QMI message: QMI TLV length mismatch: got %d bytes, header declares %d", got, want)
 	}
 	if r.MessageLength > 0 {
 		if err := r.TLVs.UnmarshalBinary(data[headerLen : headerLen+int(r.MessageLength)]); err != nil {

@@ -41,14 +41,20 @@ const (
 	MessageReadTransparent           MessageID = 0x0020
 	MessageReadRecord                MessageID = 0x0021
 	MessageGetFileAttributes         MessageID = 0x0024
+	MessageRefreshRegister           MessageID = 0x002A
+	MessageRefreshComplete           MessageID = 0x002C
+	MessageRegisterEvents            MessageID = 0x002E
 	MessagePowerOffSIM               MessageID = 0x0030
 	MessagePowerOnSIM                MessageID = 0x0031
+	MessageRefresh                   MessageID = 0x0033
 	MessageChangeProvisioningSession MessageID = 0x0038
 	MessageSendAPDU                  MessageID = 0x003B
 	MessageOpenLogicalChannel        MessageID = 0x0042
 	MessageCloseLogicalChannel       MessageID = 0x003F
+	MessageRefreshRegisterAll        MessageID = 0x0044
 	MessageSwitchSlot                MessageID = 0x0046
 	MessageGetSlotStatus             MessageID = 0x0047
+	MessageSlotStatus                MessageID = 0x0048
 	MessageGetCardStatus             MessageID = 0x002F
 	MessageAuthenticate              MessageID = 0x0034
 
@@ -81,9 +87,29 @@ type Response struct {
 	TLVs          tlv.TLVs
 }
 
+// Indication is an unsolicited QMI message delivered outside a request/response
+// transaction.
+type Indication struct {
+	Service       ServiceType
+	ClientID      uint8
+	TransactionID uint16
+	MessageID     MessageID
+	TLVs          tlv.TLVs
+}
+
 type Transport interface {
 	Do(ctx context.Context, req Request) (Response, error)
 	Close() error
+}
+
+// IndicationTransport extends Transport with best-effort indication delivery.
+//
+// Indications returns a channel for unsolicited messages matching service,
+// clientID, and id. The channel is closed when ctx is done or the transport
+// closes. Delivery is lossy: a slow subscriber may miss indications.
+type IndicationTransport interface {
+	Transport
+	Indications(ctx context.Context, service ServiceType, clientID uint8, id MessageID) (<-chan Indication, error)
 }
 
 func RequestDeadline(ctx context.Context, timeout time.Duration) (time.Time, bool) {

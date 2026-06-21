@@ -74,21 +74,31 @@ func TestResponseUnmarshalBinary(t *testing.T) {
 	}
 }
 
-func TestTransportClearsReadDeadlineOnce(t *testing.T) {
+func TestTransportDispatchesIndications(t *testing.T) {
 	mismatch := []byte{
 		0x02, 0x09, 0x00, 0x20, 0x00, 0x0C, 0x00,
 		0x02, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
 		0x10, 0x02, 0x00, 0x90, 0x00,
+	}
+	indication := []byte{
+		0x04, 0x00, 0x00, 0x48, 0x00, 0x00, 0x00,
 	}
 	match := []byte{
 		0x02, 0x03, 0x00, 0x20, 0x00, 0x0C, 0x00,
 		0x02, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
 		0x10, 0x02, 0x00, 0x90, 0x00,
 	}
-	conn := &deadlinePacketConn{frames: [][]byte{mismatch, match}}
+	conn := &deadlinePacketConn{frames: [][]byte{mismatch, indication, match}}
 	transport := New(conn)
 
-	_, err := transport.Do(context.Background(), qcom.Request{
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	indications, err := transport.Indications(ctx, qcom.ServiceUIM, 0, qcom.MessageSlotStatus)
+	if err != nil {
+		t.Fatalf("Indications() error = %v", err)
+	}
+
+	_, err = transport.Do(context.Background(), qcom.Request{
 		TransactionID: 3,
 		MessageID:     qcom.MessageReadTransparent,
 		Timeout:       time.Second,
@@ -96,17 +106,52 @@ func TestTransportClearsReadDeadlineOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Do() error = %v", err)
 	}
-	if len(conn.readDeadlines) != 2 {
-		t.Fatalf("read deadlines = %d, want set and clear", len(conn.readDeadlines))
+
+	select {
+	case ind := <-indications:
+		if ind.Service != qcom.ServiceUIM || ind.MessageID != qcom.MessageSlotStatus {
+			t.Fatalf("indication = %+v, want slot status", ind)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for indication")
 	}
-	if conn.readDeadlines[0].IsZero() || !conn.readDeadlines[1].IsZero() {
-		t.Fatalf("read deadlines = %+v, want non-zero then zero", conn.readDeadlines)
+}
+
+func TestTransportCanUnsubscribeWhileDeliveringIndication(t *testing.T) {
+	transport := New(&deadlinePacketConn{})
+	ind := qcom.Indication{
+		Service:   qcom.ServiceUIM,
+		MessageID: qcom.MessageSlotStatus,
+	}
+
+	for range 1000 {
+		ch := make(chan qcom.Indication, 1)
+		transport.mu.Lock()
+		transport.nextSub++
+		id := transport.nextSub
+		transport.subs[id] = subscription{
+			message: qcom.MessageSlotStatus,
+			ch:      ch,
+		}
+		transport.mu.Unlock()
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			transport.deliverIndication(ind)
+		}()
+		transport.removeSubscription(id)
+
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for indication delivery")
+		}
 	}
 }
 
 type deadlinePacketConn struct {
-	frames        [][]byte
-	readDeadlines []time.Time
+	frames [][]byte
 }
 
 func (c *deadlinePacketConn) Read(p []byte) (int, error) {
@@ -120,8 +165,6 @@ func (c *deadlinePacketConn) Read(p []byte) (int, error) {
 
 func (c *deadlinePacketConn) Write(p []byte) (int, error) { return len(p), nil }
 func (c *deadlinePacketConn) Close() error                { return nil }
-
-func (c *deadlinePacketConn) SetReadDeadline(t time.Time) error {
-	c.readDeadlines = append(c.readDeadlines, t)
+func (c *deadlinePacketConn) SetReadDeadline(time.Time) error {
 	return nil
 }
