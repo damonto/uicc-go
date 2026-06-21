@@ -37,6 +37,14 @@ const (
 	SlotStateActive
 )
 
+type CardProtocol uint32
+
+const (
+	CardProtocolUnknown CardProtocol = iota
+	CardProtocolICC
+	CardProtocolUICC
+)
+
 type QMIFileType byte
 
 const (

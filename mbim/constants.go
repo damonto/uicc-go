@@ -7,6 +7,7 @@ const (
 
 	CIDSTKEnvelope = 0x00000003
 
+	CIDUiccATR                = 0x00000001
 	CIDUiccOpenChannel        = 0x00000002
 	CIDUiccCloseChannel       = 0x00000003
 	CIDUiccAPDU               = 0x00000004

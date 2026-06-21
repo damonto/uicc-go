@@ -628,6 +628,15 @@ func encodeSlotStatus(activeSlot uint8) []byte {
 	return value
 }
 
+func encodeSlotInformation() []byte {
+	value := []byte{0x02}
+	value = binary.LittleEndian.AppendUint32(value, uint32(CardProtocolICC))
+	value = append(value, 0x01, 0x01, 0x3B, 0x00)
+	value = binary.LittleEndian.AppendUint32(value, uint32(CardProtocolUICC))
+	value = append(value, 0x03, 0x02, 0x3B, 0x9F, 0x01)
+	return value
+}
+
 func encodeCardStatus(ready bool) []byte {
 	value := make([]byte, 0, 64)
 	value = append(value, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)

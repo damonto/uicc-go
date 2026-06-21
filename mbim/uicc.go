@@ -62,6 +62,21 @@ func (r *Reader) AuthenticateAKA(ctx context.Context, rand, autn []byte) (*AuthA
 	return request.Response, nil
 }
 
+func (r *Reader) QueryUiccATR(ctx context.Context) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed {
+		return nil, errors.New("querying MBIM UICC ATR: reader is closed")
+	}
+
+	request := UiccATRQueryRequest{TransactionID: r.nextTransactionID()}
+	if err := request.Request().Transmit(ctx, r.conn); err != nil {
+		return nil, fmt.Errorf("querying MBIM UICC ATR: %w", err)
+	}
+	return slices.Clone(request.Response.ATR), nil
+}
+
 func (r *Reader) OpenChannel(ctx context.Context, aid []byte) (uint32, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

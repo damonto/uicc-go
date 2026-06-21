@@ -184,13 +184,19 @@ func TestWatchSlotStatus(t *testing.T) {
 		Service:   qcom.ServiceUIM,
 		ClientID:  7,
 		MessageID: qcom.MessageSlotStatus,
-		TLVs:      tlv.TLVs{tlv.Bytes(0x10, encodeSlotStatus(1))},
+		TLVs: tlv.TLVs{
+			tlv.Bytes(0x10, encodeSlotStatus(1)),
+			tlv.Bytes(0x11, encodeSlotInformation()),
+		},
 	})
 
 	select {
 	case status := <-statuses:
 		if status.ActiveSlot != 1 {
 			t.Fatalf("ActiveSlot = %d, want 1", status.ActiveSlot)
+		}
+		if status.Slots[1].CardProtocol != CardProtocolUICC || !status.Slots[1].IsEUICC {
+			t.Fatalf("Slots[1] = %+v, want UICC eUICC slot information", status.Slots[1])
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for slot status")

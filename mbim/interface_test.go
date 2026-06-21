@@ -23,6 +23,7 @@ func TestProtocolTypesImplementStandardInterfaces(t *testing.T) {
 	var _ encoding.BinaryUnmarshaler = (*ReadBinaryResponse)(nil)
 	var _ encoding.BinaryUnmarshaler = (*ReadRecordResponse)(nil)
 	var _ encoding.BinaryUnmarshaler = (*AuthAKAResponse)(nil)
+	var _ encoding.BinaryUnmarshaler = (*UiccATRResponse)(nil)
 	var _ encoding.BinaryUnmarshaler = (*OpenChannelResponse)(nil)
 	var _ encoding.BinaryUnmarshaler = (*CloseChannelResponse)(nil)
 	var _ encoding.BinaryUnmarshaler = (*APDUResponse)(nil)

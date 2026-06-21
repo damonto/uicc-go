@@ -1,6 +1,7 @@
 package uim
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -96,5 +97,97 @@ func TestReaderSlotPrimitives(t *testing.T) {
 	}
 	if transport.idx != len(transport.calls) {
 		t.Fatalf("Do() calls = %d, want %d", transport.idx, len(transport.calls))
+	}
+}
+
+func TestDecodeSlotStatusPhysicalSlotInformation(t *testing.T) {
+	tests := []struct {
+		name    string
+		tlvs    tlv.TLVs
+		check   func(*testing.T, SlotStatus)
+		wantErr bool
+	}{
+		{
+			name: "with physical slot information",
+			tlvs: tlv.TLVs{
+				tlv.Bytes(0x10, encodeSlotStatus(2)),
+				tlv.Bytes(0x11, encodeSlotInformation()),
+			},
+			check: func(t *testing.T, got SlotStatus) {
+				t.Helper()
+				if got.ActiveSlot != 2 {
+					t.Fatalf("ActiveSlot = %d, want 2", got.ActiveSlot)
+				}
+				slot := got.Slots[1]
+				if slot.CardProtocol != CardProtocolUICC {
+					t.Fatalf("CardProtocol = %d, want %d", slot.CardProtocol, CardProtocolUICC)
+				}
+				if slot.ValidApplications != 3 {
+					t.Fatalf("ValidApplications = %d, want 3", slot.ValidApplications)
+				}
+				if !bytes.Equal(slot.ATR, []byte{0x3B, 0x9F}) {
+					t.Fatalf("ATR = % X, want 3B 9F", slot.ATR)
+				}
+				if !slot.IsEUICC {
+					t.Fatal("IsEUICC = false, want true")
+				}
+			},
+		},
+		{
+			name: "without physical slot information",
+			tlvs: tlv.TLVs{
+				tlv.Bytes(0x10, encodeSlotStatus(1)),
+			},
+			check: func(t *testing.T, got SlotStatus) {
+				t.Helper()
+				slot := got.Slots[0]
+				if slot.CardProtocol != CardProtocolUnknown || slot.ValidApplications != 0 || len(slot.ATR) != 0 || slot.IsEUICC {
+					t.Fatalf("Slots[0] = %+v, want zero physical slot information fields", slot)
+				}
+			},
+		},
+		{
+			name: "physical slot information count mismatch",
+			tlvs: tlv.TLVs{
+				tlv.Bytes(0x10, encodeSlotStatus(1)),
+				tlv.Bytes(0x11, []byte{
+					0x01,
+					0x01, 0x00, 0x00, 0x00,
+					0x01,
+					0x01, 0x3B,
+					0x00,
+				}),
+			},
+			wantErr: true,
+		},
+		{
+			name: "truncated physical slot information",
+			tlvs: tlv.TLVs{
+				tlv.Bytes(0x10, encodeSlotStatus(1)),
+				tlv.Bytes(0x11, []byte{
+					0x02,
+					0x01, 0x00, 0x00, 0x00,
+					0x01,
+					0x01, 0x3B,
+				}),
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := decodeSlotStatus(qcom.Response{TLVs: tt.tlvs})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("decodeSlotStatus() error = nil, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decodeSlotStatus() error = %v", err)
+			}
+			tt.check(t, got)
+		})
 	}
 }

@@ -21,6 +21,10 @@ type Slot struct {
 	PhysicalSlotStatus SlotState
 	LogicalSlot        uint8
 	ICCID              []byte
+	CardProtocol       CardProtocol
+	ValidApplications  uint8
+	ATR                []byte
+	IsEUICC            bool
 }
 
 type CardStatus struct {
@@ -88,7 +92,34 @@ func decodeSlotStatus(resp qcom.Response) (SlotStatus, error) {
 			status.ActiveSlot = uint8(i + 1)
 		}
 	}
+	if value, ok := tlv.Value(resp.TLVs, 0x11); ok {
+		if err := decodeSlotInformation(&status, value); err != nil {
+			return SlotStatus{}, fmt.Errorf("reading slot status: %w", err)
+		}
+	}
 	return status, nil
+}
+
+func decodeSlotInformation(status *SlotStatus, value []byte) error {
+	payload := newPayloadReader(value)
+	count := payload.Uint8()
+	if err := payload.Err(); err != nil {
+		return err
+	}
+	if int(count) != len(status.Slots) {
+		return fmt.Errorf("slot information count %d, want %d", count, len(status.Slots))
+	}
+
+	for i := range count {
+		status.Slots[i].CardProtocol = CardProtocol(payload.Uint32())
+		status.Slots[i].ValidApplications = payload.Uint8()
+		status.Slots[i].ATR = payload.Bytes8()
+		status.Slots[i].IsEUICC = payload.Uint8() != 0
+		if err := payload.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func decodeCardStatus(resp qcom.Response) (CardStatus, error) {

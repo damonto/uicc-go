@@ -549,6 +549,39 @@ func (r *AuthAKAResponse) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
+type UiccATRQueryRequest struct {
+	TransactionID uint32
+	Response      *UiccATRResponse
+}
+
+func (r *UiccATRQueryRequest) Request() *Request {
+	r.Response = new(UiccATRResponse)
+	return &Request{
+		MessageType:   MessageTypeCommand,
+		TransactionID: r.TransactionID,
+		Command: command(
+			ServiceMsUiccLowLevelAccess,
+			CIDUiccATR,
+			CommandTypeQuery,
+			nil,
+		),
+		Response: r.Response,
+	}
+}
+
+type UiccATRResponse struct {
+	ATR []byte
+}
+
+func (r *UiccATRResponse) UnmarshalBinary(data []byte) error {
+	value, err := uiccByteArrayRef(data, 0)
+	if err != nil {
+		return fmt.Errorf("parsing MBIM UICC ATR: %w", err)
+	}
+	r.ATR = value
+	return nil
+}
+
 type OpenChannelRequest struct {
 	TransactionID uint32
 	ApplicationID []byte

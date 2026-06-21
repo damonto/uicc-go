@@ -84,6 +84,33 @@ func TestSTKEnvelopeRequest(t *testing.T) {
 	}
 }
 
+func TestUiccATRRequestData(t *testing.T) {
+	tests := []struct {
+		name string
+		req  *Request
+	}{
+		{
+			name: "query",
+			req:  (&UiccATRQueryRequest{TransactionID: 1}).Request(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			command := tt.req.Command.(*Command)
+			if command.ServiceID != ServiceMsUiccLowLevelAccess {
+				t.Fatalf("ServiceID = % X, want MS UICC low level access", command.ServiceID)
+			}
+			if command.CommandID != CIDUiccATR || command.CommandType != CommandTypeQuery {
+				t.Fatalf("command = cid %d type %d, want cid %d query", command.CommandID, command.CommandType, CIDUiccATR)
+			}
+			if len(command.Data) != 0 {
+				t.Fatalf("Data = %X, want empty", command.Data)
+			}
+		})
+	}
+}
+
 func TestUICCChannelRequestData(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -176,6 +203,47 @@ func TestUiccResetRequestData(t *testing.T) {
 			}
 			if !bytes.Equal(command.Data, tt.want) {
 				t.Fatalf("Data = %X, want %X", command.Data, tt.want)
+			}
+		})
+	}
+}
+
+func TestUiccATRResponseUnmarshalBinary(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    []byte
+		want    []byte
+		wantErr bool
+	}{
+		{
+			name: "atr",
+			data: mustDecodeHex(t, "03000000080000003B9F96"),
+			want: []byte{0x3B, 0x9F, 0x96},
+		},
+		{
+			name:    "truncated reference",
+			data:    mustDecodeHex(t, "03000000"),
+			wantErr: true,
+		},
+		{
+			name:    "truncated value",
+			data:    mustDecodeHex(t, "03000000080000003B9F"),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got UiccATRResponse
+			err := got.UnmarshalBinary(tt.data)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("UnmarshalBinary() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if !bytes.Equal(got.ATR, tt.want) {
+				t.Fatalf("ATR = %X, want %X", got.ATR, tt.want)
 			}
 		})
 	}
@@ -399,6 +467,57 @@ func TestUICCChannelResponseUnmarshalBinary(t *testing.T) {
 			}
 			if !bytes.Equal(got, tt.want) {
 				t.Fatalf("Response = %X, want %X", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReaderQueryUiccATR(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want []byte
+	}{
+		{
+			name: "query",
+			data: mustDecodeHex(t, "03000000080000003B9F96"),
+			want: []byte{0x3B, 0x9F, 0x96},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, server := net.Pipe()
+			t.Cleanup(func() { _ = client.Close() })
+
+			errc := make(chan error, 1)
+			go func() {
+				defer close(errc)
+				defer server.Close()
+
+				if err := expectMBIMCommandWithType(server, 1, CIDUiccATR, CommandTypeQuery, nil); err != nil {
+					errc <- err
+					return
+				}
+				if _, err := server.Write(mbimCommandDone(1, ServiceMsUiccLowLevelAccess, CIDUiccATR, tt.data)); err != nil {
+					errc <- err
+					return
+				}
+			}()
+
+			reader := &Reader{conn: client}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+
+			got, err := reader.QueryUiccATR(ctx)
+			if err != nil {
+				t.Fatalf("QueryUiccATR() error = %v", err)
+			}
+			if !bytes.Equal(got, tt.want) {
+				t.Fatalf("QueryUiccATR() = %X, want %X", got, tt.want)
+			}
+			if err := <-errc; err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
