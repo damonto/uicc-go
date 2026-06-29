@@ -108,7 +108,7 @@ import (
 func main() {
 	ctx := context.Background()
 
-	reader, err := at.Open(ctx, "/dev/ttyUSB2", 115200)
+	reader, err := at.Open("/dev/ttyUSB2", 115200)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -299,7 +299,7 @@ import (
 func main() {
 	ctx := context.Background()
 
-	tx, err := at.Open(ctx, "/dev/ttyUSB2", 115200)
+tx, err := at.Open("/dev/ttyUSB2", 115200)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -249,19 +249,6 @@ func TestCSIMCommandMarshalText(t *testing.T) {
 	}
 }
 
-func TestDefaultInitCommands(t *testing.T) {
-	got := defaultInitCommands()
-	want := []string{"AT", "ATE0", "AT+CMEE=2"}
-	if len(got) != len(want) {
-		t.Fatalf("defaultInitCommands() len = %d, want %d", len(got), len(want))
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("defaultInitCommands()[%d] = %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
 func TestBaudRateOrDefault(t *testing.T) {
 	tests := []struct {
 		name string
@@ -276,43 +263,6 @@ func TestBaudRateOrDefault(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := baudRateOrDefault(tt.baud); got != tt.want {
 				t.Fatalf("baudRateOrDefault() = %d, want %d", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestReaderInit(t *testing.T) {
-	tests := []struct {
-		name      string
-		ctx       context.Context
-		response  string
-		wantWrite string
-		wantErr   error
-	}{
-		{
-			name:      "runs default commands",
-			ctx:       context.Background(),
-			response:  "AT\r\nOK\r\nATE0\r\nOK\r\nAT+CMEE=2\r\nOK\r\n",
-			wantWrite: "AT\r\nATE0\r\nAT+CMEE=2\r\n",
-		},
-		{
-			name:    "uses caller context",
-			ctx:     canceledContext(),
-			wantErr: context.Canceled,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			port := &scriptPort{readData: tt.response}
-			reader := newReader(port)
-
-			err := reader.init(tt.ctx)
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("init() error = %v, want %v", err, tt.wantErr)
-			}
-			if string(port.written) != tt.wantWrite {
-				t.Fatalf("init() wrote %q, want %q", string(port.written), tt.wantWrite)
 			}
 		})
 	}

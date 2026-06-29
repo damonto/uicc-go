@@ -23,13 +23,6 @@ type Reader struct {
 	closed bool
 }
 
-// Option configures an AT reader opened with Open.
-type Option func(*config)
-
-type config struct {
-	init bool
-}
-
 type readDeadliner interface {
 	SetReadDeadline(time.Time) error
 }
@@ -38,21 +31,10 @@ type writeDeadliner interface {
 	SetWriteDeadline(time.Time) error
 }
 
-// WithoutInit skips the default AT initialization commands during Open.
-func WithoutInit() Option {
-	return func(c *config) {
-		c.init = false
-	}
-}
-
-func Open(ctx context.Context, device string, baudRate int, opts ...Option) (*Reader, error) {
+func Open(device string, baudRate int) (*Reader, error) {
 	device = strings.TrimSpace(device)
 	if device == "" {
 		return nil, errors.New("opening AT reader: device is empty")
-	}
-	cfg := config{init: true}
-	for _, opt := range opts {
-		opt(&cfg)
 	}
 
 	port, err := openSerialPort(device, baudRateOrDefault(baudRate))
@@ -60,15 +42,7 @@ func Open(ctx context.Context, device string, baudRate int, opts ...Option) (*Re
 		return nil, fmt.Errorf("opening serial port %s: %w", device, err)
 	}
 
-	reader := newReader(port)
-	if cfg.init {
-		err = reader.init(ctx)
-	}
-	if err != nil {
-		_ = port.Close()
-		return nil, err
-	}
-	return reader, nil
+	return newReader(port), nil
 }
 
 func newReader(port io.ReadWriteCloser) *Reader {
@@ -76,15 +50,6 @@ func newReader(port io.ReadWriteCloser) *Reader {
 		port:   port,
 		reader: bufio.NewReader(port),
 	}
-}
-
-func (d *Reader) init(ctx context.Context) error {
-	for _, command := range defaultInitCommands() {
-		if _, err := d.run(ctx, command); err != nil {
-			return fmt.Errorf("running init command %q: %w", command, err)
-		}
-	}
-	return nil
 }
 
 func newCSIMCommand(req []byte) (CSIMCommand, error) {
@@ -99,10 +64,6 @@ func baudRateOrDefault(baudRate int) int {
 		return defaultBaudRate
 	}
 	return baudRate
-}
-
-func defaultInitCommands() []string {
-	return []string{"AT", "ATE0", "AT+CMEE=2"}
 }
 
 func (d *Reader) Transmit(ctx context.Context, req []byte) ([]byte, error) {
