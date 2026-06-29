@@ -299,7 +299,7 @@ import (
 func main() {
 	ctx := context.Background()
 
-tx, err := at.Open("/dev/ttyUSB2", 115200)
+	tx, err := at.Open("/dev/ttyUSB2", 115200)
 	if err != nil {
 		log.Fatal(err)
 	}
